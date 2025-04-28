@@ -298,6 +298,10 @@ func (p *Processor) fetchNow(ctx context.Context, inc *esi.IncludeElement) ([]by
 		return nil, &UnsupportedElementError{Element: inc}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	data, err := p.opts.fetchFunc(ctx, inc.Source)
 
 	if err == nil {
