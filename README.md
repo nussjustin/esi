@@ -62,7 +62,28 @@ if err := proc.Process(ctx, &buf, nodes); err != nil {
 fmt.Println(buf.Bytes())
 ```
 
-When finished with the processor, call [Processor.Release][4] to release all resources.
+It is also possible to provide an [esiproc.Env][4] to enable the use of variables in URLs as well as
+`<esi:when test="...">` conditions.
+
+The [esiexpr][5] package implements such an `Env` that implements the ESI variable and expression syntax. To use it,
+simply create an instance and pass it to `esiproc.New` via [esiproc.WithEnv][6]:
+
+```go
+myEnv := &esiproc.Env{
+    LookupVar: func(ctx context.Context, name string, key *string) (ast.Value, error) {
+        // ...lookup name and return the value
+        return val, nil
+    },
+}
+
+proc := esiproc.New(
+    esiproc.WithEnv(myEnv),
+    // Allow up to 4 concurrent HTTP requests
+    esiproc.WithFetchConcurrency(4),
+    esiproc.WithFetchFunc(fetch))
+```
+
+When finished with the processor, call [Processor.Release][7] to release all resources.
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
@@ -76,4 +97,7 @@ Please make sure to update tests as appropriate.
 [1]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/
 [2]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor
 [3]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#New
-[4]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor.Release
+[4]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Env
+[5]: https://pkg.go.dev/github.com/nussjustin/esi/esiexpr/
+[6]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#WithEnv
+[7]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor.Release

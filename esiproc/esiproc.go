@@ -141,7 +141,7 @@ func WithFetchFunc(f FetchFunc) ProcessorOpt {
 // - esi:otherwise
 // - esi:remove
 // - esi:try
-// - esi:when (see [WithTestFunc])
+// - esi:when (see [WithEnv])
 //
 // If a non-nil [Env] is specified, using [WithEnv], both the src and alt attributes of the esi:include element will
 // have any variables inside replaced via [Env.Interpolate].
