@@ -210,6 +210,21 @@ func Parse(data string) (Node, error) {
 	return node, nil
 }
 
+// ParseVariable parses a single variable from the given string.
+//
+// Any trailing data is ignored.
+func ParseVariable(data string) (*VariableNode, error) {
+	p := getParser(data)
+	defer putParser(p)
+
+	node, err := p.parseVar()
+	if err != nil {
+		return nil, err
+	}
+
+	return node.(*VariableNode), nil
+}
+
 type parser struct {
 	data   string
 	offset int

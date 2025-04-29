@@ -817,6 +817,99 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestParseVariable(t *testing.T) {
+	testCases := []struct {
+		Name     string
+		Input    string
+		Expected esiexpr.VariableNode
+		Error    error
+	}{
+		{
+			Name:  "simple",
+			Input: `$(SOME_VAR)`,
+			Expected: esiexpr.VariableNode{
+				Position: position(0, 11),
+				Name:     "SOME_VAR",
+			},
+		},
+		{
+			Name:  "with key",
+			Input: `$(SOME_DICT{key})`,
+			Expected: esiexpr.VariableNode{
+				Position: position(0, 17),
+				Name:     "SOME_DICT",
+				Key:      ptr("key"),
+			},
+		},
+		{
+			Name:  "with key and default",
+			Input: `$(SOME_DICT{key}|default)`,
+			Expected: esiexpr.VariableNode{
+				Position: position(0, 25),
+				Name:     "SOME_DICT",
+				Key:      ptr("key"),
+				Default: &esiexpr.ValueNode{
+					Position: position(17, 24),
+					Value:    "default",
+				},
+			},
+		},
+		{
+			Name:  "with default",
+			Input: `$(SOME_VAR|default)`,
+			Expected: esiexpr.VariableNode{
+				Position: position(0, 19),
+				Name:     "SOME_VAR",
+				Default: &esiexpr.ValueNode{
+					Position: position(11, 18),
+					Value:    "default",
+				},
+			},
+		},
+		{
+			Name:  "data after variable",
+			Input: `$(SOME_DICT{key}|default) suffix`,
+			Expected: esiexpr.VariableNode{
+				Position: position(0, 25),
+				Name:     "SOME_DICT",
+				Key:      ptr("key"),
+				Default: &esiexpr.ValueNode{
+					Position: position(17, 24),
+					Value:    "default",
+				},
+			},
+		},
+		{
+			Name:  "data before variable",
+			Input: `prefix $(SOME_DICT{key}|default)`,
+			Error: &esiexpr.SyntaxError{Offset: 0, Message: "unexpected character 'p', '$' expected"},
+		},
+		{
+			Name:  "invalid variable",
+			Input: `$(SOME DICT{key}|default)`,
+			Error: &esiexpr.SyntaxError{Offset: 6, Message: "unexpected space in variable name"},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			v, err := esiexpr.ParseVariable(testCase.Input)
+
+			if got, want := err, testCase.Error; !errors.Is(got, want) {
+				t.Errorf("got error %v, want %v", got, want)
+			}
+
+			if err != nil {
+				return
+			}
+
+			if diff := cmp.Diff(testCase.Expected, *v); diff != "" {
+				t.Errorf("Parse() mismatch (-want, +got) = %v", diff)
+			}
+		})
+	}
+}
+
 func BenchmarkParse(b *testing.B) {
 	const expr = `$(VAR1{key1}|$(DEFAULT{key2}|none)) < -12.34 & ((
 		false == $(VAR2)) | 	true & !(null == null) ) == true != 'quoted'`
