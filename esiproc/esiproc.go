@@ -10,8 +10,33 @@ import (
 	"sync"
 
 	"github.com/nussjustin/esi"
+	"github.com/nussjustin/esi/esiexpr"
 )
 
+// InvalidExpressionResultError is returned when the result of an expression has the wrong type.
+type InvalidExpressionResultError struct {
+	// Element is the element for which the error was reported.
+	Element esi.Element
+
+	// Expr is the raw evaluated expression.
+	Expr string
+
+	// Result is the result of the expression.
+	Result esiexpr.Value
+}
+
+// Error returns a human-readable error message.
+func (e *InvalidExpressionResultError) Error() string {
+	return fmt.Sprintf("invalid expression result %q", fmt.Sprint(e.Result))
+}
+
+// Is checks if the given error matches the receiver.
+func (e *InvalidExpressionResultError) Is(err error) bool {
+	var o *InvalidExpressionResultError
+	return errors.As(err, &o) && o.Error() == e.Error()
+}
+
+// UnexpectedElementError is returned when encountering an element that is not expected in the given context.
 type UnexpectedElementError struct {
 	// Element is the element for which the error was reported.
 	Element esi.Element
@@ -29,6 +54,8 @@ func (e *UnexpectedElementError) Is(err error) bool {
 	return errors.As(err, &o) && o.Error() == e.Error()
 }
 
+// UnsupportedElementError is returned when encountering an element that is not supported, either because it is not
+// implemented or because the configuration of the [Processor] is not configured to handle it.
 type UnsupportedElementError struct {
 	// Element is the element for which the error was reported.
 	Element esi.Element
@@ -51,19 +78,31 @@ func (e *UnsupportedElementError) Unwrap() error {
 	return errors.ErrUnsupported
 }
 
+// Env implements methods for processing ESI expressions and variables.
+type Env interface {
+	// Eval evaluates the given ESI expression and returns the boolean result.
+	Eval(ctx context.Context, expr string) (esiexpr.Value, error)
+}
+
 // FetchFunc defines the signature for functions used to fetch data for <esi:include/> elements.
 type FetchFunc func(ctx context.Context, urlStr string) ([]byte, error)
-
-// TestFunc defines the signature for functions used to evaluate <esi:when test="..."/> expressions.
-type TestFunc func(ctx context.Context, expr string) (bool, error)
 
 // ProcessorOpt is the type for functions that can be used to customize the behaviour of a [Processor].
 type ProcessorOpt func(*processorOptions)
 
 type processorOptions struct {
+	env              Env
 	fetchConcurrency int
 	fetchFunc        FetchFunc
-	testFunc         TestFunc
+}
+
+// WithEnv specifies the environment to use for processing.
+//
+// If env is nil, <esi:when/> elements will be unsupported, leading to [UnsupportedElementError] when one is found.
+func WithEnv(env Env) ProcessorOpt {
+	return func(p *processorOptions) {
+		p.env = env
+	}
 }
 
 // WithFetchConcurrency configures a [Processor] to make at most n concurrent fetches at a time.
@@ -85,15 +124,6 @@ func WithFetchConcurrency(n int) ProcessorOpt {
 func WithFetchFunc(f FetchFunc) ProcessorOpt {
 	return func(p *processorOptions) {
 		p.fetchFunc = f
-	}
-}
-
-// WithTestFunc specifies the function used to check <esi:when test="..."/> expressions.
-//
-// If f is nil, <esi:when/> elements will be unsupported, leading to [UnsupportedElementError] when one is found.
-func WithTestFunc(f TestFunc) ProcessorOpt {
-	return func(p *processorOptions) {
-		p.testFunc = f
 	}
 }
 
@@ -194,16 +224,21 @@ func (p *Processor) processNode(
 		return nil
 	case *esi.ChooseElement:
 		for _, w := range v.When {
-			if p.opts.testFunc == nil {
+			if p.opts.env == nil {
 				return &UnsupportedElementError{Element: w}
 			}
 
-			ok, err := p.opts.testFunc(ctx, w.Test)
+			result, err := p.opts.env.Eval(ctx, w.Test)
 			if err != nil {
 				return err
 			}
 
+			resultBool, ok := result.(bool)
 			if !ok {
+				return &InvalidExpressionResultError{Element: w, Expr: w.Test, Result: result}
+			}
+
+			if !resultBool {
 				continue
 			}
 

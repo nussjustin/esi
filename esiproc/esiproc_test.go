@@ -11,12 +11,28 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/nussjustin/esi"
+	"github.com/nussjustin/esi/esiexpr"
 	"github.com/nussjustin/esi/esiproc"
 )
 
-func TestProcessor(t *testing.T) {
-	errInvalid := errors.New("invalid input")
+var errInvalid = errors.New("invalid input")
 
+type testEnv struct{}
+
+func (t testEnv) Eval(_ context.Context, expr string) (esiexpr.Value, error) {
+	switch expr {
+	case "false":
+		return false, nil
+	case "null":
+		return nil, nil
+	case "true":
+		return true, nil
+	default:
+		return nil, errInvalid
+	}
+}
+
+func TestProcessor(t *testing.T) {
 	testCases := []struct {
 		Name       string
 		Opts       []esiproc.ProcessorOpt
@@ -84,7 +100,7 @@ func TestProcessor(t *testing.T) {
 		{
 			Name: "choose without test func",
 			Opts: []esiproc.ProcessorOpt{
-				esiproc.WithTestFunc(nil),
+				esiproc.WithEnv(nil),
 			},
 			Input: `
 				<esi:choose>
@@ -316,16 +332,7 @@ func TestProcessor(t *testing.T) {
 						panic("unexpected include call")
 					}
 				}),
-				esiproc.WithTestFunc(func(_ context.Context, expr string) (bool, error) {
-					switch expr {
-					case "false":
-						return false, nil
-					case "true":
-						return true, nil
-					default:
-						return false, errInvalid
-					}
-				}),
+				esiproc.WithEnv(testEnv{}),
 			}
 
 			p := esiproc.New(append(defaultOpts, testCase.Opts...)...)
