@@ -15,7 +15,10 @@ import (
 	"github.com/nussjustin/esi/esiproc"
 )
 
-var errInvalid = errors.New("invalid input")
+var (
+	errInvalid       = errors.New("invalid input")
+	errInterpolation = errors.New("interpolation failed")
+)
 
 type testEnv struct{}
 
@@ -30,6 +33,15 @@ func (t testEnv) Eval(_ context.Context, expr string) (esiexpr.Value, error) {
 	default:
 		return nil, errInvalid
 	}
+}
+
+func (t testEnv) Interpolate(_ context.Context, s string) (string, error) {
+	if strings.Contains(s, "$(ERROR)") {
+		return "", errInterpolation
+	}
+	s = strings.ReplaceAll(s, "$(VAR1)", "var 1")
+	s = strings.ReplaceAll(s, "$(VAR2)", "var 2")
+	return s, nil
 }
 
 func TestProcessor(t *testing.T) {
@@ -174,6 +186,29 @@ func TestProcessor(t *testing.T) {
 			Error: &esiproc.UnsupportedElementError{
 				Element: &esi.IncludeElement{Position: esi.Position{Start: 7, End: 49}},
 			},
+		},
+		{
+			Name:     "include with variable in src",
+			Input:    `<esi:include src="/echo?string=$(VAR1)"/>`,
+			Expected: `var 1`,
+		},
+		{
+			Name:     "include with variable in alt",
+			Input:    `<esi:include src="/error" alt="/echo?string=$(VAR2)"/>`,
+			Expected: `var 2`,
+		},
+		{
+			Name: "include with unsupported variable",
+			Opts: []esiproc.ProcessorOpt{
+				esiproc.WithEnv(nil),
+			},
+			Input:    `<esi:include src="/echo?string=$(VAR1)"/>`,
+			Expected: `$(VAR1)`,
+		},
+		{
+			Name:  "include with failed interpolation",
+			Input: `<esi:include src="/echo?string=$(ERROR)"/>`,
+			Error: errInterpolation,
 		},
 		{
 			Name: "otherwise outside choose",

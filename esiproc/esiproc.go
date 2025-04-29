@@ -82,6 +82,9 @@ func (e *UnsupportedElementError) Unwrap() error {
 type Env interface {
 	// Eval evaluates the given ESI expression and returns the boolean result.
 	Eval(ctx context.Context, expr string) (esiexpr.Value, error)
+
+	// Interpolate replaces variables inside the given string with their actual or default value.
+	Interpolate(ctx context.Context, s string) (string, error)
 }
 
 // FetchFunc defines the signature for functions used to fetch data for <esi:include/> elements.
@@ -140,6 +143,9 @@ func WithFetchFunc(f FetchFunc) ProcessorOpt {
 // - esi:try
 // - esi:when (see [WithTestFunc])
 //
+// If a non-nil [Env] is specified, using [WithEnv], both the src and alt attributes of the esi:include element will
+// have any variables inside replaced via [Env.Interpolate].
+//
 // Other elements are not supported and will result in an error when trying to process them.
 //
 // Processor is safe for concurrent use.
@@ -155,6 +161,7 @@ type Processor struct {
 
 type fetchPromise struct {
 	ctx context.Context //nolint:containedctx
+
 	inc *esi.IncludeElement
 
 	data []byte
@@ -176,11 +183,16 @@ func New(opts ...ProcessorOpt) *Processor {
 
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
+	// No need for any workers if we don't support fetching
+	if p.opts.fetchFunc == nil {
+		return p
+	}
+
 	for range p.opts.fetchConcurrency {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.processIncludes()
+			p.handleFetchPromises()
 		}()
 	}
 
@@ -318,45 +330,54 @@ func (p *Processor) processNodes(ctx context.Context, dst io.Writer, nodes esi.N
 	return nil
 }
 
-func (p *Processor) fetchNow(ctx context.Context, inc *esi.IncludeElement) ([]byte, error) {
-	if p.opts.fetchFunc == nil {
-		return nil, &UnsupportedElementError{Element: inc}
+func (p *Processor) fetch(ctx context.Context, inc *esi.IncludeElement) ([]byte, error) {
+	data, err := p.fetchURLWithVars(ctx, inc.Source)
+
+	if err != nil && inc.Alt != "" {
+		data, err = p.fetchURLWithVars(ctx, inc.Alt)
 	}
 
+	return data, err
+}
+
+func (p *Processor) fetchURLWithVars(ctx context.Context, urlWithVars string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	data, err := p.opts.fetchFunc(ctx, inc.Source)
-
-	if err == nil {
-		return data, nil
+	if p.opts.env == nil {
+		return p.opts.fetchFunc(ctx, urlWithVars)
 	}
 
-	if inc.Alt == "" {
+	url, err := p.opts.env.Interpolate(ctx, urlWithVars)
+	if err != nil {
 		return nil, err
 	}
 
-	return p.opts.fetchFunc(ctx, inc.Alt)
+	return p.opts.fetchFunc(ctx, url)
 }
 
-func (p *Processor) process(item *fetchPromise) {
+func (p *Processor) handleFetchPromise(item *fetchPromise) {
 	defer close(item.done)
-	item.data, item.err = p.fetchNow(item.ctx, item.inc)
+	item.data, item.err = p.fetch(item.ctx, item.inc)
 }
 
-func (p *Processor) processIncludes() {
+func (p *Processor) handleFetchPromises() {
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
 		case item := <-p.ch:
-			p.process(item)
+			p.handleFetchPromise(item)
 		}
 	}
 }
 
 func (p *Processor) queueFetch(ctx context.Context, inc *esi.IncludeElement) (*fetchPromise, error) {
+	if p.opts.fetchFunc == nil {
+		return nil, &UnsupportedElementError{Element: inc}
+	}
+
 	item := &fetchPromise{
 		ctx:  ctx,
 		inc:  inc,
@@ -372,6 +393,10 @@ func (p *Processor) queueFetch(ctx context.Context, inc *esi.IncludeElement) (*f
 }
 
 func (p *Processor) tryQueueFetch(ctx context.Context, inc *esi.IncludeElement) *fetchPromise {
+	if p.opts.fetchFunc == nil {
+		return nil
+	}
+
 	f := &fetchPromise{
 		ctx:  ctx,
 		inc:  inc,
