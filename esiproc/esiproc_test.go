@@ -313,7 +313,7 @@ func TestProcessor(t *testing.T) {
 					case "/error":
 						return nil, errInvalid
 					default:
-						panic("unexpected fetch call")
+						panic("unexpected include call")
 					}
 				}),
 				esiproc.WithTestFunc(func(_ context.Context, expr string) (bool, error) {

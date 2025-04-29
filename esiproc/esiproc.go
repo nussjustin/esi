@@ -51,7 +51,7 @@ func (e *UnsupportedElementError) Unwrap() error {
 	return errors.ErrUnsupported
 }
 
-// FetchFunc defines the signature for functions used fetch data for <esi:include/> elements.
+// FetchFunc defines the signature for functions used to fetch data for <esi:include/> elements.
 type FetchFunc func(ctx context.Context, urlStr string) ([]byte, error)
 
 // TestFunc defines the signature for functions used to evaluate <esi:when test="..."/> expressions.
@@ -116,14 +116,14 @@ func WithTestFunc(f TestFunc) ProcessorOpt {
 type Processor struct {
 	opts processorOptions
 
-	workerCtx    context.Context //nolint:containedctx
-	workerCancel context.CancelFunc
-	workerWg     sync.WaitGroup
+	ctx    context.Context //nolint:containedctx
+	cancel context.CancelFunc
 
-	queue *queue[*fetchQueueItem]
+	wg sync.WaitGroup
+	ch chan *fetchPromise
 }
 
-type fetchQueueItem struct {
+type fetchPromise struct {
 	ctx context.Context //nolint:containedctx
 	inc *esi.IncludeElement
 
@@ -137,20 +137,20 @@ type fetchQueueItem struct {
 //
 // The default is equivalent to: New(WithFetchConcurrency(1), WithFetchFunc(nil), WithTestFunc(nil)).
 func New(opts ...ProcessorOpt) *Processor {
-	p := &Processor{queue: newQueue[*fetchQueueItem]()}
+	p := &Processor{ch: make(chan *fetchPromise)}
 	p.opts.fetchConcurrency = 1
 
 	for _, opt := range opts {
 		opt(&p.opts)
 	}
 
-	p.workerCtx, p.workerCancel = context.WithCancel(context.Background())
+	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	for range p.opts.fetchConcurrency {
-		p.workerWg.Add(1)
+		p.wg.Add(1)
 		go func() {
-			defer p.workerWg.Done()
-			p.worker()
+			defer p.wg.Done()
+			p.processIncludes()
 		}()
 	}
 
@@ -163,7 +163,7 @@ func New(opts ...ProcessorOpt) *Processor {
 //
 // If Process is called after Release, an error is returned.
 func (p *Processor) Process(ctx context.Context, dst io.Writer, nodes esi.Nodes) error {
-	if err := p.workerCtx.Err(); err != nil {
+	if err := p.ctx.Err(); err != nil {
 		return err
 	}
 
@@ -177,15 +177,15 @@ func (p *Processor) Process(ctx context.Context, dst io.Writer, nodes esi.Nodes)
 //
 // If called multiple times, all but the first call will be no-ops.
 func (p *Processor) Release() {
-	p.workerCancel()
-	p.workerWg.Wait()
+	p.cancel()
+	p.wg.Wait()
 }
 
 func (p *Processor) processNode(
 	ctx context.Context,
 	dst io.Writer,
 	node esi.Node,
-	item *fetchQueueItem,
+	promise *fetchPromise,
 ) error {
 	switch v := node.(type) {
 	case *esi.AttemptElement:
@@ -221,15 +221,17 @@ func (p *Processor) processNode(
 		var data []byte
 		var err error
 
-		if item != nil {
-			select {
-			case <-ctx.Done():
-				err = ctx.Err()
-			case <-item.done:
-				data, err = item.data, item.err
+		if promise == nil {
+			if promise, err = p.queueFetch(ctx, v); err != nil {
+				return err
 			}
-		} else {
-			data, err = p.fetch(ctx, v)
+		}
+
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-promise.done:
+			data, err = promise.data, promise.err
 		}
 
 		if err != nil {
@@ -270,27 +272,15 @@ func (p *Processor) processNode(
 }
 
 func (p *Processor) processNodes(ctx context.Context, dst io.Writer, nodes esi.Nodes) error {
-	queuedFetches := p.queueFetchesFromNodes(ctx, nodes)
+	promises := p.tryQueueFetches(ctx, nodes)
 
 	for _, node := range nodes {
-		if err := p.processNode(ctx, dst, node, queuedFetches[node]); err != nil {
+		if err := p.processNode(ctx, dst, node, promises[node]); err != nil {
 			return err
 		}
 	}
 
 	return nil
-}
-
-func (p *Processor) fetch(ctx context.Context, inc *esi.IncludeElement) ([]byte, error) {
-	item := p.queueFetch(ctx, inc)
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-item.done:
-	}
-
-	return item.data, item.err
 }
 
 func (p *Processor) fetchNow(ctx context.Context, inc *esi.IncludeElement) ([]byte, error) {
@@ -315,48 +305,72 @@ func (p *Processor) fetchNow(ctx context.Context, inc *esi.IncludeElement) ([]by
 	return p.opts.fetchFunc(ctx, inc.Alt)
 }
 
-func (p *Processor) queueFetch(ctx context.Context, inc *esi.IncludeElement) *fetchQueueItem {
-	item := &fetchQueueItem{
+func (p *Processor) process(item *fetchPromise) {
+	defer close(item.done)
+	item.data, item.err = p.fetchNow(item.ctx, item.inc)
+}
+
+func (p *Processor) processIncludes() {
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case item := <-p.ch:
+			p.process(item)
+		}
+	}
+}
+
+func (p *Processor) queueFetch(ctx context.Context, inc *esi.IncludeElement) (*fetchPromise, error) {
+	item := &fetchPromise{
 		ctx:  ctx,
 		inc:  inc,
 		done: make(chan struct{}),
 	}
 
-	p.queue.push(item)
-
-	return item
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case p.ch <- item:
+		return item, nil
+	}
 }
 
-func (p *Processor) queueFetchesFromNodes(ctx context.Context, nodes esi.Nodes) map[esi.Node]*fetchQueueItem {
-	var m map[esi.Node]*fetchQueueItem
+func (p *Processor) tryQueueFetch(ctx context.Context, inc *esi.IncludeElement) *fetchPromise {
+	f := &fetchPromise{
+		ctx:  ctx,
+		inc:  inc,
+		done: make(chan struct{}),
+	}
+
+	select {
+	case p.ch <- f:
+		return f
+	default:
+		return nil
+	}
+}
+
+func (p *Processor) tryQueueFetches(ctx context.Context, nodes esi.Nodes) map[esi.Node]*fetchPromise {
+	var m map[esi.Node]*fetchPromise
 
 	for _, node := range nodes {
-		include, ok := node.(*esi.IncludeElement)
+		inc, ok := node.(*esi.IncludeElement)
 		if !ok {
 			continue
 		}
 
-		if m == nil {
-			m = make(map[esi.Node]*fetchQueueItem)
+		f := p.tryQueueFetch(ctx, inc)
+		if f == nil {
+			continue
 		}
 
-		m[include] = p.queueFetch(ctx, include)
+		if m == nil {
+			m = make(map[esi.Node]*fetchPromise)
+		}
+
+		m[inc] = f
 	}
 
 	return m
-}
-
-func (p *Processor) process(item *fetchQueueItem) {
-	defer close(item.done)
-	item.data, item.err = p.fetchNow(item.ctx, item.inc)
-}
-
-func (p *Processor) worker() {
-	for {
-		item, ok := p.queue.pop(p.workerCtx.Done())
-		if !ok {
-			return
-		}
-		p.process(item)
-	}
 }
