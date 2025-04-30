@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/nussjustin/esi"
-	"github.com/nussjustin/esi/esiexpr"
+	"github.com/nussjustin/esi/esiexpr/ast"
 )
 
 // InvalidExpressionResultError is returned when the result of an expression has the wrong type.
@@ -22,7 +22,7 @@ type InvalidExpressionResultError struct {
 	Expr string
 
 	// Result is the result of the expression.
-	Result esiexpr.Value
+	Result ast.Value
 }
 
 // Error returns a human-readable error message.
@@ -81,7 +81,7 @@ func (e *UnsupportedElementError) Unwrap() error {
 // Env implements methods for processing ESI expressions and variables.
 type Env interface {
 	// Eval evaluates the given ESI expression and returns the boolean result.
-	Eval(ctx context.Context, expr string) (esiexpr.Value, error)
+	Eval(ctx context.Context, expr string) (any, error)
 
 	// Interpolate replaces variables inside the given string with their actual or default value.
 	Interpolate(ctx context.Context, s string) (string, error)

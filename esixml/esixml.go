@@ -139,7 +139,7 @@ type Name struct {
 	Local string
 }
 
-// String implements the [fmt.GoStringer] interface.
+// String implements the [fmt.Stringer] interface.
 func (n Name) String() string {
 	if n.Space == "" {
 		return n.Local
@@ -161,7 +161,7 @@ func (p Position) Pos() (start, end int) {
 	return p.Start, p.End
 }
 
-// String implements the [fmt.GoStringer] interface.
+// String implements the [fmt.Stringer] interface.
 func (p Position) String() string {
 	return strconv.Itoa(p.Start) + ":" + strconv.Itoa(p.End)
 }

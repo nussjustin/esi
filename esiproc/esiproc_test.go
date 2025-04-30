@@ -11,7 +11,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/nussjustin/esi"
-	"github.com/nussjustin/esi/esiexpr"
 	"github.com/nussjustin/esi/esiproc"
 )
 
@@ -22,7 +21,7 @@ var (
 
 type testEnv struct{}
 
-func (t testEnv) Eval(_ context.Context, expr string) (esiexpr.Value, error) {
+func (t testEnv) Eval(_ context.Context, expr string) (any, error) {
 	switch expr {
 	case "false":
 		return false, nil
