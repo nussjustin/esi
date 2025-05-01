@@ -135,15 +135,16 @@ func WithIncludeFunc(f IncludeFunc) ProcessorOpt {
 // Processor implements the handling of ESI elements.
 //
 // The following elements are supported:
-// - esi:attempt
-// - esi:choose
-// - esi:comment
-// - esi:except
-// - esi:include (see [WithIncludeFunc], including alt and onerror)
-// - esi:otherwise
-// - esi:remove
-// - esi:try
-// - esi:when (see [WithEnv])
+//
+//   - esi:attempt
+//   - esi:choose
+//   - esi:comment
+//   - esi:except
+//   - esi:include (see [WithIncludeFunc], including alt and onerror)
+//   - esi:otherwise
+//   - esi:remove
+//   - esi:try
+//   - esi:when (see [WithEnv])
 //
 // If a non-nil [Env] is specified, using [WithEnv], both the src and alt attributes of the esi:include element will
 // have any variables inside replaced via [Env.Interpolate].
