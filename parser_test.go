@@ -31,7 +31,7 @@ func TestParse(t *testing.T) {
 	testCases := []struct {
 		Name  string
 		Input string
-		Nodes esi.Nodes
+		Nodes []esi.Node
 		Error error
 	}{
 		{
@@ -56,14 +56,14 @@ func TestParse(t *testing.T) {
 					<esi:when test="cond1">1</esi:when>
 				</esi:choose>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.ChooseElement{
 					Position: position(0, 71),
 					When: []*esi.WhenElement{
 						{
 							Position: position(18, 53),
 							Test:     "cond1",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(41, 42),
 									Bytes:    []byte("1"),
@@ -83,14 +83,14 @@ func TestParse(t *testing.T) {
 					<esi:when test="cond2">2</esi:when>
 				</esi:choose>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.ChooseElement{
 					Position: position(0, 112),
 					When: []*esi.WhenElement{
 						{
 							Position: position(18, 53),
 							Test:     "cond1",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(41, 42),
 									Bytes:    []byte("1"),
@@ -100,7 +100,7 @@ func TestParse(t *testing.T) {
 						{
 							Position: position(59, 94),
 							Test:     "cond2",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(82, 83),
 									Bytes:    []byte("2"),
@@ -121,14 +121,14 @@ func TestParse(t *testing.T) {
 					<esi:otherwise>otherwise1</esi:otherwise>
 				</esi:choose>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.ChooseElement{
 					Position: position(0, 159),
 					When: []*esi.WhenElement{
 						{
 							Position: position(18, 53),
 							Test:     "cond1",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(41, 42),
 									Bytes:    []byte("1"),
@@ -138,7 +138,7 @@ func TestParse(t *testing.T) {
 						{
 							Position: position(59, 94),
 							Test:     "cond2",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(82, 83),
 									Bytes:    []byte("2"),
@@ -148,7 +148,7 @@ func TestParse(t *testing.T) {
 					},
 					Otherwise: &esi.OtherwiseElement{
 						Position: position(100, 141),
-						Nodes: esi.Nodes{
+						Nodes: []esi.Node{
 							&esi.RawData{
 								Position: position(115, 125),
 								Bytes:    []byte("otherwise1"),
@@ -225,14 +225,14 @@ func TestParse(t *testing.T) {
 					<esi:remove>data</esi:remove>
 				</esi:choose>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.ChooseElement{
 					Position: position(0, 192),
 					When: []*esi.WhenElement{
 						{
 							Position: position(28, 63),
 							Test:     "cond1",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(51, 52),
 									Bytes:    []byte("1"),
@@ -242,7 +242,7 @@ func TestParse(t *testing.T) {
 						{
 							Position: position(104, 139),
 							Test:     "cond2",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(127, 128),
 									Bytes:    []byte("2"),
@@ -291,7 +291,7 @@ func TestParse(t *testing.T) {
 					<esi:otherwise attr5="value5" attr6="value6"></esi:otherwise>
 				</esi:choose>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.ChooseElement{
 					Position: position(0, 197),
 					Attr: []esixml.Attr{
@@ -306,7 +306,7 @@ func TestParse(t *testing.T) {
 								attr(86, 100, "attr4", "value4"),
 							},
 							Test:  "cond1",
-							Nodes: esi.Nodes{},
+							Nodes: []esi.Node{},
 						},
 					},
 					Otherwise: &esi.OtherwiseElement{
@@ -315,7 +315,7 @@ func TestParse(t *testing.T) {
 							attr(133, 147, "attr5", "value5"),
 							attr(148, 162, "attr6", "value6"),
 						},
-						Nodes: esi.Nodes{},
+						Nodes: []esi.Node{},
 					},
 				},
 			},
@@ -323,7 +323,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "comment",
 			Input: `<esi:comment text="some text"/>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.CommentElement{
 					Position: position(0, 31),
 					Text:     "some text",
@@ -367,7 +367,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "comment with extra attributes",
 			Input: `<esi:comment text="some comment" attr1="value1" attr2="value2"/>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.CommentElement{
 					Position: position(0, 64),
 					Attr: []esixml.Attr{
@@ -392,7 +392,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "include",
 			Input: `<esi:include src="/test"/>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.IncludeElement{
 					Position: position(0, 26),
 					Source:   "/test",
@@ -402,7 +402,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "include with alt",
 			Input: `<esi:include src="/test" alt="/fallback"/>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.IncludeElement{
 					Position: position(0, 42),
 					Alt:      "/fallback",
@@ -413,7 +413,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "include with alt and onerror",
 			Input: `<esi:include src="/test" alt="/fallback" onerror="continue"/>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.IncludeElement{
 					Position: position(0, 61),
 					Alt:      "/fallback",
@@ -425,7 +425,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "include with onerror",
 			Input: `<esi:include src="/test" onerror="continue"/>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.IncludeElement{
 					Position: position(0, 45),
 					OnError:  esi.ErrorBehaviourContinue,
@@ -498,7 +498,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "include with extra attributes",
 			Input: `<esi:include src="/test" attr1="value1" attr2="value2"/>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.IncludeElement{
 					Position: position(0, 56),
 					Attr: []esixml.Attr{
@@ -512,7 +512,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "inline with fetchable=no",
 			Input: `<esi:inline name="/extra" fetchable="no">extra <esi:choose> content</esi:inline>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.InlineElement{
 					Position:     position(0, 80),
 					FragmentName: "/extra",
@@ -527,7 +527,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "inline with fetchable=yes",
 			Input: `<esi:inline name="/extra" fetchable="yes">extra <esi:choose> content</esi:inline>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.InlineElement{
 					Position:     position(0, 81),
 					FragmentName: "/extra",
@@ -613,7 +613,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "inline with extra attributes",
 			Input: `<esi:inline name="/test" fetchable="yes" attr1="value1" attr2="value2"></esi:inline>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.InlineElement{
 					Position: position(0, 84),
 					Attr: []esixml.Attr{
@@ -643,7 +643,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "remove",
 			Input: `<esi:remove>something <esi:comment text="some comment"/></esi:remove>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.RemoveElement{
 					Position: position(0, 69),
 					Data: esi.RawData{
@@ -697,7 +697,7 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "remove with extra attributes",
 			Input: `<esi:remove attr1="value1" attr2="value2"></esi:remove>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.RemoveElement{
 					Position: position(0, 55),
 					Attr: []esixml.Attr{
@@ -719,12 +719,12 @@ func TestParse(t *testing.T) {
 					<esi:except>except1</esi:except>
 				</esi:try>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.TryElement{
 					Position: position(0, 103),
 					Attempt: &esi.AttemptElement{
 						Position: position(15, 50),
-						Nodes: esi.Nodes{
+						Nodes: []esi.Node{
 							&esi.RawData{
 								Position: position(28, 36),
 								Bytes:    []byte(`attempt1`),
@@ -733,7 +733,7 @@ func TestParse(t *testing.T) {
 					},
 					Except: &esi.ExceptElement{
 						Position: position(56, 88),
-						Nodes: esi.Nodes{
+						Nodes: []esi.Node{
 							&esi.RawData{
 								Position: position(68, 75),
 								Bytes:    []byte(`except1`),
@@ -818,12 +818,12 @@ func TestParse(t *testing.T) {
 					<esi:remove>data</esi:remove>
 				</esi:try>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.TryElement{
 					Position: position(0, 183),
 					Attempt: &esi.AttemptElement{
 						Position: position(25, 60),
-						Nodes: esi.Nodes{
+						Nodes: []esi.Node{
 							&esi.RawData{
 								Position: position(38, 46),
 								Bytes:    []byte(`attempt1`),
@@ -832,7 +832,7 @@ func TestParse(t *testing.T) {
 					},
 					Except: &esi.ExceptElement{
 						Position: position(101, 133),
-						Nodes: esi.Nodes{
+						Nodes: []esi.Node{
 							&esi.RawData{
 								Position: position(113, 120),
 								Bytes:    []byte(`except1`),
@@ -898,7 +898,7 @@ func TestParse(t *testing.T) {
 					<esi:except attr4="value4"></esi:except>
 				</esi:try>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.TryElement{
 					Position: position(0, 148),
 					Attr: []esixml.Attr{
@@ -910,14 +910,14 @@ func TestParse(t *testing.T) {
 						Attr: []esixml.Attr{
 							attr(58, 72, "attr3", "value3"),
 						},
-						Nodes: esi.Nodes{},
+						Nodes: []esi.Node{},
 					},
 					Except: &esi.ExceptElement{
 						Position: position(93, 133),
 						Attr: []esixml.Attr{
 							attr(105, 119, "attr4", "value4"),
 						},
-						Nodes: esi.Nodes{},
+						Nodes: []esi.Node{},
 					},
 				},
 			},
@@ -925,10 +925,10 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "vars",
 			Input: `<esi:vars>something<esi:comment text="some comment"/></esi:vars>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.VarsElement{
 					Position: position(0, 64),
-					Nodes: esi.Nodes{
+					Nodes: []esi.Node{
 						&esi.RawData{
 							Position: position(10, 19),
 							Bytes:    []byte(`something`),
@@ -989,14 +989,14 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "vars with extra attributes",
 			Input: `<esi:vars attr1="value1" attr2="value2"></esi:vars>`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.VarsElement{
 					Position: position(0, 51),
 					Attr: []esixml.Attr{
 						attr(10, 24, "attr1", "value1"),
 						attr(25, 39, "attr2", "value2"),
 					},
-					Nodes: esi.Nodes{},
+					Nodes: []esi.Node{},
 				},
 			},
 		},
@@ -1073,7 +1073,7 @@ func TestParse(t *testing.T) {
 
 <footer>Footer</footer>
 			`,
-			Nodes: esi.Nodes{
+			Nodes: []esi.Node{
 				&esi.RawData{
 					Position: position(0, 25),
 					Bytes:    []byte("<header>Header</header>\n\n"),
@@ -1107,7 +1107,7 @@ func TestParse(t *testing.T) {
 						{
 							Position: position(301, 428),
 							Test:     "$(HTTP_COOKIE{group})=='Advanced'",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(352, 356),
 									Bytes:    []byte(" \n\t\t"),
@@ -1125,7 +1125,7 @@ func TestParse(t *testing.T) {
 						{
 							Position: position(431, 555),
 							Test:     "$(HTTP_COOKIE{group})=='Basic User'",
-							Nodes: esi.Nodes{
+							Nodes: []esi.Node{
 								&esi.RawData{
 									Position: position(484, 487),
 									Bytes:    []byte("\n\t\t"),
@@ -1143,7 +1143,7 @@ func TestParse(t *testing.T) {
 					},
 					Otherwise: &esi.OtherwiseElement{
 						Position: position(558, 654),
-						Nodes: esi.Nodes{
+						Nodes: []esi.Node{
 							&esi.RawData{
 								Position: position(573, 577),
 								Bytes:    []byte(" \n\t\t"),
@@ -1167,7 +1167,7 @@ func TestParse(t *testing.T) {
 					Position: position(696, 975),
 					Attempt: &esi.AttemptElement{
 						Position: position(708, 833),
-						Nodes: esi.Nodes{
+						Nodes: []esi.Node{
 							&esi.RawData{
 								Position: position(721, 724),
 								Bytes:    []byte("\n\t\t"),
@@ -1192,7 +1192,7 @@ func TestParse(t *testing.T) {
 					},
 					Except: &esi.ExceptElement{
 						Position: position(835, 963),
-						Nodes: esi.Nodes{
+						Nodes: []esi.Node{
 							&esi.RawData{
 								Position: position(847, 851),
 								Bytes:    []byte(" \n\t\t"),
@@ -1233,7 +1233,7 @@ func TestParse(t *testing.T) {
 				},
 				&esi.VarsElement{
 					Position: position(1210, 1302),
-					Nodes: esi.Nodes{
+					Nodes: []esi.Node{
 						&esi.RawData{
 							Position: position(1220, 1291),
 							Bytes:    []byte("\n\t<img src=\"https://www.example.com/$(HTTP_COOKIE{type})/hello.gif\"/ >\n"),

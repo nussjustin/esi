@@ -240,9 +240,6 @@ type Node interface {
 	node()
 }
 
-// Nodes is a simple slice of [Node] values.
-type Nodes []Node
-
 // Element is the interface implemented by all Node types that are based on ESI elements.
 type Element interface {
 	Node
@@ -264,7 +261,7 @@ type AttemptElement struct {
 	Attr []esixml.Attr
 
 	// Nodes contains all child nodes of the element.
-	Nodes Nodes
+	Nodes []Node
 }
 
 var _ Element = (*AttemptElement)(nil)
@@ -348,7 +345,7 @@ type ExceptElement struct {
 	Attr []esixml.Attr
 
 	// Nodes contains all child nodes of the element.
-	Nodes Nodes
+	Nodes []Node
 }
 
 var _ Element = (*ExceptElement)(nil)
@@ -441,7 +438,7 @@ type OtherwiseElement struct {
 	Attr []esixml.Attr
 
 	// Nodes contains all child nodes of the element.
-	Nodes Nodes
+	Nodes []Node
 }
 
 var _ Element = (*OtherwiseElement)(nil)
@@ -542,7 +539,7 @@ type VarsElement struct {
 	Attr []esixml.Attr
 
 	// Nodes contains all child nodes of the element.
-	Nodes Nodes
+	Nodes []Node
 }
 
 var _ Element = (*VarsElement)(nil)
@@ -572,7 +569,7 @@ type WhenElement struct {
 	Test string
 
 	// Nodes contains all child nodes of the element.
-	Nodes Nodes
+	Nodes []Node
 }
 
 var _ Element = (*WhenElement)(nil)
@@ -595,7 +592,7 @@ type parser struct {
 	reader      esixml.Reader
 	unreadToken esixml.Token
 
-	nodes []Nodes
+	nodes [][]Node
 
 	stateFn func(*parser) error
 }
@@ -618,7 +615,7 @@ func putParser(p *parser) {
 }
 
 // Parse parses the given []byte and returns all ESI elements as well as any non-ESI data.
-func Parse(data []byte) (Nodes, error) {
+func Parse(data []byte) ([]Node, error) {
 	p := getParser(data)
 	defer putParser(p)
 
@@ -722,7 +719,7 @@ func (p *parser) currentParent() Node {
 func (p *parser) push(node Node) {
 	level := len(p.nodes) - 1
 	if p.nodes[level] == nil {
-		p.nodes[level] = make(Nodes, 0, 32)
+		p.nodes[level] = make([]Node, 0, 32)
 	}
 	p.nodes[level] = append(p.nodes[level], node)
 }
@@ -730,10 +727,10 @@ func (p *parser) push(node Node) {
 func (p *parser) pushAndEnter(node Element) {
 	level := len(p.nodes) - 1
 	p.nodes[level] = append(p.nodes[level], node)
-	p.nodes = append(p.nodes, make(Nodes, 0, 4))
+	p.nodes = append(p.nodes, make([]Node, 0, 4))
 }
 
-func (p *parser) exit() Nodes {
+func (p *parser) exit() []Node {
 	nodes := p.nodes[len(p.nodes)-1]
 	p.nodes = p.nodes[:len(p.nodes)-1]
 	return nodes
@@ -1286,7 +1283,7 @@ func (p *parser) parseWhenElementEnd() error {
 
 func (p *parser) reset(data []byte) {
 	if len(p.nodes) == 0 || cap(p.nodes) > 4 {
-		p.nodes = make([]Nodes, 1, 4)
+		p.nodes = make([][]Node, 1, 4)
 	} else {
 		clear(p.nodes)
 	}

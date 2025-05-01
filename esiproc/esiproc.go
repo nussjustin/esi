@@ -204,7 +204,7 @@ func New(opts ...ProcessorOpt) *Processor {
 // When encountering an unsupported element, [errors.ErrUnsupported] is returned.
 //
 // If Process is called after Release, an error is returned.
-func (p *Processor) Process(ctx context.Context, dst io.Writer, nodes esi.Nodes) error {
+func (p *Processor) Process(ctx context.Context, dst io.Writer, nodes []esi.Node) error {
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func (p *Processor) processNode(
 	}
 }
 
-func (p *Processor) processNodes(ctx context.Context, dst io.Writer, nodes esi.Nodes) error {
+func (p *Processor) processNodes(ctx context.Context, dst io.Writer, nodes []esi.Node) error {
 	promises := p.tryQueueFetches(ctx, nodes)
 
 	for _, node := range nodes {
@@ -411,7 +411,7 @@ func (p *Processor) tryQueueFetch(ctx context.Context, inc *esi.IncludeElement) 
 	}
 }
 
-func (p *Processor) tryQueueFetches(ctx context.Context, nodes esi.Nodes) map[esi.Node]*fetchPromise {
+func (p *Processor) tryQueueFetches(ctx context.Context, nodes []esi.Node) map[esi.Node]*fetchPromise {
 	var m map[esi.Node]*fetchPromise
 
 	for _, node := range nodes {

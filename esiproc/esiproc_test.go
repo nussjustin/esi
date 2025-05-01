@@ -55,7 +55,7 @@ func TestProcessor(t *testing.T) {
 	}{
 		{
 			Name: "attempt outside try",
-			InputNodes: esi.Nodes{
+			InputNodes: []esi.Node{
 				&esi.AttemptElement{
 					Position: esi.Position{Start: 5, End: 18},
 				},
@@ -131,7 +131,7 @@ func TestProcessor(t *testing.T) {
 		},
 		{
 			Name: "except outside try",
-			InputNodes: esi.Nodes{
+			InputNodes: []esi.Node{
 				&esi.ExceptElement{
 					Position: esi.Position{Start: 5, End: 18},
 				},
@@ -212,7 +212,7 @@ func TestProcessor(t *testing.T) {
 		},
 		{
 			Name: "otherwise outside choose",
-			InputNodes: esi.Nodes{
+			InputNodes: []esi.Node{
 				&esi.OtherwiseElement{
 					Position: esi.Position{Start: 5, End: 18},
 				},
@@ -281,7 +281,7 @@ func TestProcessor(t *testing.T) {
 		},
 		{
 			Name: "when outside choose",
-			InputNodes: esi.Nodes{
+			InputNodes: []esi.Node{
 				&esi.WhenElement{
 					Position: esi.Position{Start: 5, End: 18},
 				},
