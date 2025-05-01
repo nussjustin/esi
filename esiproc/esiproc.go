@@ -11,6 +11,7 @@ import (
 
 	"github.com/nussjustin/esi"
 	"github.com/nussjustin/esi/esiexpr/ast"
+	"github.com/nussjustin/esi/esixml"
 )
 
 // InvalidExpressionResultError is returned when the result of an expression has the wrong type.
@@ -87,16 +88,16 @@ type Env interface {
 	Interpolate(ctx context.Context, s string) (string, error)
 }
 
-// FetchFunc defines the signature for functions used to fetch data for <esi:include/> elements.
-type FetchFunc func(ctx context.Context, urlStr string) ([]byte, error)
+// IncludeFunc defines the signature for functions used to include data for <esi:include/> elements.
+type IncludeFunc func(ctx context.Context, urlStr string, meta map[string]string) ([]byte, error)
 
 // ProcessorOpt is the type for functions that can be used to customize the behaviour of a [Processor].
 type ProcessorOpt func(*processorOptions)
 
 type processorOptions struct {
-	env              Env
-	fetchConcurrency int
-	fetchFunc        FetchFunc
+	env            Env
+	incConcurrency int
+	incFunc        IncludeFunc
 }
 
 // WithEnv specifies the environment to use for processing.
@@ -108,25 +109,26 @@ func WithEnv(env Env) ProcessorOpt {
 	}
 }
 
-// WithFetchConcurrency configures a [Processor] to make at most n concurrent fetches at a time.
+// WithIncludeConcurrency configures a [Processor] to make at most n concurrent calls to the configured [IncludeFunc]
+// at a time.
 //
-// If n is < 1, WithFetchConcurrency panics.
-func WithFetchConcurrency(n int) ProcessorOpt {
+// If n is < 1, WithIncludeConcurrency panics.
+func WithIncludeConcurrency(n int) ProcessorOpt {
 	if n < 1 {
-		panic("WithFetchConcurrency called with n < 1")
+		panic("WithIncludeConcurrency called with n < 1")
 	}
 
 	return func(p *processorOptions) {
-		p.fetchConcurrency = n
+		p.incConcurrency = n
 	}
 }
 
-// WithFetchFunc specifies the function used to resolve <esi:include/> elements.
+// WithIncludeFunc specifies the function used to resolve <esi:include/> elements.
 //
 // If f is nil, <esi:include/> elements will be unsupported, leading to [UnsupportedElementError] when one is found.
-func WithFetchFunc(f FetchFunc) ProcessorOpt {
+func WithIncludeFunc(f IncludeFunc) ProcessorOpt {
 	return func(p *processorOptions) {
-		p.fetchFunc = f
+		p.incFunc = f
 	}
 }
 
@@ -137,7 +139,7 @@ func WithFetchFunc(f FetchFunc) ProcessorOpt {
 // - esi:choose
 // - esi:comment
 // - esi:except
-// - esi:include (see [WithFetchFunc], including alt and onerror)
+// - esi:include (see [WithIncludeFunc], including alt and onerror)
 // - esi:otherwise
 // - esi:remove
 // - esi:try
@@ -156,10 +158,10 @@ type Processor struct {
 	cancel context.CancelFunc
 
 	wg sync.WaitGroup
-	ch chan *fetchPromise
+	ch chan *includePromise
 }
 
-type fetchPromise struct {
+type includePromise struct {
 	ctx context.Context //nolint:containedctx
 
 	inc *esi.IncludeElement
@@ -172,10 +174,10 @@ type fetchPromise struct {
 
 // New creates a new Processor and applies the given options.
 //
-// The default is equivalent to: New(WithFetchConcurrency(1), WithFetchFunc(nil), WithTestFunc(nil)).
+// The default is equivalent to: New(WithIncludeConcurrency(1), WithIncludeFunc(nil), WithTestFunc(nil)).
 func New(opts ...ProcessorOpt) *Processor {
-	p := &Processor{ch: make(chan *fetchPromise)}
-	p.opts.fetchConcurrency = 1
+	p := &Processor{ch: make(chan *includePromise)}
+	p.opts.incConcurrency = 1
 
 	for _, opt := range opts {
 		opt(&p.opts)
@@ -184,15 +186,15 @@ func New(opts ...ProcessorOpt) *Processor {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	// No need for any workers if we don't support fetching
-	if p.opts.fetchFunc == nil {
+	if p.opts.incFunc == nil {
 		return p
 	}
 
-	for range p.opts.fetchConcurrency {
+	for range p.opts.incConcurrency {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.handleFetchPromises()
+			p.handleIncludes()
 		}()
 	}
 
@@ -227,7 +229,7 @@ func (p *Processor) processNode(
 	ctx context.Context,
 	dst io.Writer,
 	node esi.Node,
-	promise *fetchPromise,
+	promise *includePromise,
 ) error {
 	switch v := node.(type) {
 	case *esi.AttemptElement:
@@ -269,7 +271,7 @@ func (p *Processor) processNode(
 		var err error
 
 		if promise == nil {
-			if promise, err = p.queueFetch(ctx, v); err != nil {
+			if promise, err = p.queueInclude(ctx, v); err != nil {
 				return err
 			}
 		}
@@ -330,55 +332,71 @@ func (p *Processor) processNodes(ctx context.Context, dst io.Writer, nodes []esi
 	return nil
 }
 
-func (p *Processor) fetch(ctx context.Context, inc *esi.IncludeElement) ([]byte, error) {
-	data, err := p.fetchURLWithVars(ctx, inc.Source)
+func attrsToMap(attrs []esixml.Attr) map[string]string {
+	if len(attrs) == 0 {
+		return nil
+	}
+
+	m := make(map[string]string, len(attrs))
+
+	for _, attr := range attrs {
+		m[attr.Name.String()] = attr.Value
+	}
+
+	return m
+}
+
+func (p *Processor) include(ctx context.Context, inc *esi.IncludeElement) ([]byte, error) {
+	meta := attrsToMap(inc.Attr)
+
+	data, err := p.includeURL(ctx, inc.Source, meta)
 
 	if err != nil && inc.Alt != "" {
-		data, err = p.fetchURLWithVars(ctx, inc.Alt)
+		data, err = p.includeURL(ctx, inc.Alt, meta)
 	}
 
 	return data, err
 }
 
-func (p *Processor) fetchURLWithVars(ctx context.Context, urlWithVars string) ([]byte, error) {
+func (p *Processor) includeURL(ctx context.Context, urlStr string, meta map[string]string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	if p.opts.env == nil {
-		return p.opts.fetchFunc(ctx, urlWithVars)
+		return p.opts.incFunc(ctx, urlStr, meta)
 	}
 
-	url, err := p.opts.env.Interpolate(ctx, urlWithVars)
+	urlStr, err := p.opts.env.Interpolate(ctx, urlStr)
 	if err != nil {
 		return nil, err
 	}
 
-	return p.opts.fetchFunc(ctx, url)
+	return p.opts.incFunc(ctx, urlStr, meta)
 }
 
-func (p *Processor) handleFetchPromise(item *fetchPromise) {
+func (p *Processor) handleInclude(item *includePromise) {
 	defer close(item.done)
-	item.data, item.err = p.fetch(item.ctx, item.inc)
+	item.data, item.err = p.include(item.ctx, item.inc)
 }
 
-func (p *Processor) handleFetchPromises() {
+func (p *Processor) handleIncludes() {
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
 		case item := <-p.ch:
-			p.handleFetchPromise(item)
+			p.handleInclude(item)
 		}
 	}
 }
 
-func (p *Processor) queueFetch(ctx context.Context, inc *esi.IncludeElement) (*fetchPromise, error) {
-	if p.opts.fetchFunc == nil {
+func (p *Processor) queueInclude(ctx context.Context, inc *esi.IncludeElement) (*includePromise, error) {
+	if p.opts.incFunc == nil {
 		return nil, &UnsupportedElementError{Element: inc}
 	}
 
-	item := &fetchPromise{
+	item := &includePromise{
 		ctx:  ctx,
 		inc:  inc,
 		done: make(chan struct{}),
@@ -392,12 +410,12 @@ func (p *Processor) queueFetch(ctx context.Context, inc *esi.IncludeElement) (*f
 	}
 }
 
-func (p *Processor) tryQueueFetch(ctx context.Context, inc *esi.IncludeElement) *fetchPromise {
-	if p.opts.fetchFunc == nil {
+func (p *Processor) tryQueueInclude(ctx context.Context, inc *esi.IncludeElement) *includePromise {
+	if p.opts.incFunc == nil {
 		return nil
 	}
 
-	f := &fetchPromise{
+	f := &includePromise{
 		ctx:  ctx,
 		inc:  inc,
 		done: make(chan struct{}),
@@ -411,8 +429,8 @@ func (p *Processor) tryQueueFetch(ctx context.Context, inc *esi.IncludeElement) 
 	}
 }
 
-func (p *Processor) tryQueueFetches(ctx context.Context, nodes []esi.Node) map[esi.Node]*fetchPromise {
-	var m map[esi.Node]*fetchPromise
+func (p *Processor) tryQueueFetches(ctx context.Context, nodes []esi.Node) map[esi.Node]*includePromise {
+	var m map[esi.Node]*includePromise
 
 	for _, node := range nodes {
 		inc, ok := node.(*esi.IncludeElement)
@@ -420,13 +438,13 @@ func (p *Processor) tryQueueFetches(ctx context.Context, nodes []esi.Node) map[e
 			continue
 		}
 
-		f := p.tryQueueFetch(ctx, inc)
+		f := p.tryQueueInclude(ctx, inc)
 		if f == nil {
 			continue
 		}
 
 		if m == nil {
-			m = make(map[esi.Node]*fetchPromise)
+			m = make(map[esi.Node]*includePromise)
 		}
 
 		m[inc] = f

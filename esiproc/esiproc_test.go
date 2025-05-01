@@ -3,6 +3,7 @@ package esiproc_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"strings"
@@ -143,13 +144,18 @@ func TestProcessor(t *testing.T) {
 		},
 		{
 			Name:     "include",
-			Input:    `before <esi:include src="/echo?string=src"/> after`,
-			Expected: `before src after`,
+			Input:    `before <esi:include src="/test"/> after`,
+			Expected: `before {"url":"/test"} after`,
 		},
 		{
 			Name:     "include with alt",
-			Input:    `before <esi:include src="/echo?string=src" alt="/panic"/> after`,
-			Expected: `before src after`,
+			Input:    `before <esi:include src="/test" alt="/panic"/> after`,
+			Expected: `before {"url":"/test"} after`,
+		},
+		{
+			Name:     "include with meta",
+			Input:    `before <esi:include src="/test" alt="/panic" attr1="value1" ns:attr2="value2"/> after`,
+			Expected: `before {"meta":{"attr1":"value1","ns:attr2":"value2"},"url":"/test"} after`,
 		},
 		{
 			Name:  "include error",
@@ -158,8 +164,8 @@ func TestProcessor(t *testing.T) {
 		},
 		{
 			Name:     "include error with alt",
-			Input:    `before <esi:include src="/error" alt="/echo?string=alt"/> after`,
-			Expected: `before alt after`,
+			Input:    `before <esi:include src="/error" alt="/alt"/> after`,
+			Expected: `before {"url":"/alt"} after`,
 		},
 		{
 			Name:  "include error with alt error",
@@ -177,36 +183,36 @@ func TestProcessor(t *testing.T) {
 			Expected: `before  after`,
 		},
 		{
-			Name: "include without fetch func",
+			Name: "include without include func",
 			Opts: []esiproc.ProcessorOpt{
-				esiproc.WithFetchFunc(nil),
+				esiproc.WithIncludeFunc(nil),
 			},
-			Input: `before <esi:include src="/echo?string=included"/> after`,
+			Input: `before <esi:include src="/included"/> after`,
 			Error: &esiproc.UnsupportedElementError{
-				Element: &esi.IncludeElement{Position: esi.Position{Start: 7, End: 49}},
+				Element: &esi.IncludeElement{Position: esi.Position{Start: 7, End: 37}},
 			},
 		},
 		{
 			Name:     "include with variable in src",
-			Input:    `<esi:include src="/echo?string=$(VAR1)"/>`,
-			Expected: `var 1`,
+			Input:    `<esi:include src="/$(VAR1)"/>`,
+			Expected: `{"url":"/var 1"}`,
 		},
 		{
 			Name:     "include with variable in alt",
-			Input:    `<esi:include src="/error" alt="/echo?string=$(VAR2)"/>`,
-			Expected: `var 2`,
+			Input:    `<esi:include src="/error" alt="/$(VAR2)"/>`,
+			Expected: `{"url":"/var 2"}`,
 		},
 		{
 			Name: "include with unsupported variable",
 			Opts: []esiproc.ProcessorOpt{
 				esiproc.WithEnv(nil),
 			},
-			Input:    `<esi:include src="/echo?string=$(VAR1)"/>`,
-			Expected: `$(VAR1)`,
+			Input:    `<esi:include src="/$(VAR1)"/>`,
+			Expected: `{"url":"/$(VAR1)"}`,
 		},
 		{
 			Name:  "include with failed interpolation",
-			Input: `<esi:include src="/echo?string=$(ERROR)"/>`,
+			Input: `<esi:include src="/$(ERROR)"/>`,
 			Error: errInterpolation,
 		},
 		{
@@ -231,38 +237,38 @@ func TestProcessor(t *testing.T) {
 			Name: "try",
 			Input: `
 				<esi:try>
-					<esi:attempt><esi:include src="/echo?string=attempt"/></esi:attempt>
+					<esi:attempt><esi:include src="/attempt"/></esi:attempt>
 					<esi:except><esi:include src="/panic"/></esi:except>
 				</esi:try>
 			`,
-			Expected: `attempt`,
+			Expected: `{"url":"/attempt"}`,
 		},
 		{
 			Name: "try with failed include",
 			Input: `
 				<esi:try>
 					<esi:attempt><esi:include src="/error"/></esi:attempt>
-					<esi:except><esi:include src="/echo?string=except"/></esi:except>
+					<esi:except><esi:include src="/except"/></esi:except>
 				</esi:try>
 			`,
-			Expected: `except`,
+			Expected: `{"url":"/except"}`,
 		},
 		{
 			Name: "try with failed include with alt",
 			Input: `
 				<esi:try>
-					<esi:attempt><esi:include src="/error" alt="/echo?string=alt"/></esi:attempt>
+					<esi:attempt><esi:include src="/error" alt="/alt"/></esi:attempt>
 					<esi:except><esi:include src="/panic"/></esi:except>
 				</esi:try>
 			`,
-			Expected: `alt`,
+			Expected: `{"url":"/alt"}`,
 		},
 		{
 			Name: "try with failed include with onerror=continue",
 			Input: `
 				<esi:try>
 					<esi:attempt><esi:include src="/error" onerror="continue"/></esi:attempt>
-					<esi:except><esi:include src="/echo?string=except"/></esi:except>
+					<esi:except><esi:include src="/except"/></esi:except>
 				</esi:try>
 			`,
 			Expected: ``,
@@ -310,7 +316,7 @@ func TestProcessor(t *testing.T) {
 							</esi:attempt>
 							<esi:except>
 								except start
-								<esi:include src="/error" alt="/echo?string=hello%20world"/>
+								<esi:include src="/error" alt="hello world"/>
 								except end
 							</esi:except>
 						</esi:try>
@@ -328,7 +334,7 @@ func TestProcessor(t *testing.T) {
 						<p>some html</p>
 						
 								except start
-								hello world
+								{"url":"hello world"}
 								except end
 							
 						before remove
@@ -350,20 +356,26 @@ func TestProcessor(t *testing.T) {
 			}
 
 			defaultOpts := []esiproc.ProcessorOpt{
-				esiproc.WithFetchConcurrency(4),
-				esiproc.WithFetchFunc(func(_ context.Context, urlStr string) ([]byte, error) {
+				esiproc.WithIncludeConcurrency(4),
+				esiproc.WithIncludeFunc(func(_ context.Context, urlStr string, meta map[string]string) ([]byte, error) {
 					parsed, err := url.Parse(urlStr)
 					if err != nil {
 						panic(err)
 					}
 
 					switch parsed.Path {
-					case "/echo":
-						return []byte(parsed.Query().Get("string")), nil
 					case "/error":
 						return nil, errInvalid
-					default:
+					case "/panic":
 						panic("unexpected include call")
+					default:
+						m := map[string]any{"url": urlStr}
+
+						if meta != nil {
+							m["meta"] = meta
+						}
+
+						return json.Marshal(m)
 					}
 				}),
 				esiproc.WithEnv(testEnv{}),

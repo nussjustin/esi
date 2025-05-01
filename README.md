@@ -22,8 +22,8 @@ Once the input is parsed, it can be used processed using the [esiproc][1] packag
 To do this first create a [esiproc.Processor][2] using [esiproc.New][3] and configure it to fetch data for ESI includes:
 
 ```go
-fetch := esiproc.FetchFunc(func(ctx context.Context, urlStr string) ([]byte, error) {
-    req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+inc := esiproc.IncludeFunc(func(ctx context.Context, urlStr string, _ map[string]string) ([]byte, error) {
+    req, err := http.NewRequestWithContext(ctx, "GET", inc.Source, nil)
     if err != nil {
         return nil, err
     }
@@ -43,8 +43,8 @@ fetch := esiproc.FetchFunc(func(ctx context.Context, urlStr string) ([]byte, err
 
 proc := esiproc.New(
     // Allow up to 4 concurrent HTTP requests
-    esiproc.WithFetchConcurrency(4),
-    esiproc.WithFetchFunc(fetch))
+    esiproc.WithIncludeConcurrency(4),
+    esiproc.WithIncludeFunc(inc))
 ```
 
 Once created the processor can be used to process multiple sets of nodes, both sequentially and concurrently.
