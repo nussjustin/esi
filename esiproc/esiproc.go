@@ -157,11 +157,11 @@ type Processor struct {
 	ctx    context.Context //nolint:containedctx
 	cancel context.CancelFunc
 
-	wg sync.WaitGroup
-	ch chan *includePromise
+	wg       sync.WaitGroup
+	incQueue queue[*include]
 }
 
-type includePromise struct {
+type include struct {
 	ctx context.Context //nolint:containedctx
 
 	inc *esi.IncludeElement
@@ -176,7 +176,8 @@ type includePromise struct {
 //
 // The default is equivalent to: New(WithIncludeConcurrency(1), WithIncludeFunc(nil), WithTestFunc(nil)).
 func New(opts ...ProcessorOpt) *Processor {
-	p := &Processor{ch: make(chan *includePromise)}
+	p := &Processor{}
+	p.incQueue.init()
 	p.opts.incConcurrency = 1
 
 	for _, opt := range opts {
@@ -229,7 +230,7 @@ func (p *Processor) processNode(
 	ctx context.Context,
 	dst io.Writer,
 	node esi.Node,
-	promise *includePromise,
+	inc *include,
 ) error {
 	switch v := node.(type) {
 	case *esi.AttemptElement:
@@ -270,8 +271,8 @@ func (p *Processor) processNode(
 		var data []byte
 		var err error
 
-		if promise == nil {
-			if promise, err = p.queueInclude(ctx, v); err != nil {
+		if inc == nil {
+			if inc, err = p.queueInclude(ctx, v); err != nil {
 				return err
 			}
 		}
@@ -279,8 +280,8 @@ func (p *Processor) processNode(
 		select {
 		case <-ctx.Done():
 			err = ctx.Err()
-		case <-promise.done:
-			data, err = promise.data, promise.err
+		case <-inc.done:
+			data, err = inc.data, inc.err
 		}
 
 		if err != nil {
@@ -321,10 +322,14 @@ func (p *Processor) processNode(
 }
 
 func (p *Processor) processNodes(ctx context.Context, dst io.Writer, nodes []esi.Node) error {
-	promises := p.tryQueueFetches(ctx, nodes)
+	var includes map[esi.Node]*include
+
+	if p.opts.incFunc != nil {
+		includes, _ = p.queueIncludes(ctx, nodes)
+	}
 
 	for _, node := range nodes {
-		if err := p.processNode(ctx, dst, node, promises[node]); err != nil {
+		if err := p.processNode(ctx, dst, node, includes[node]); err != nil {
 			return err
 		}
 	}
@@ -347,6 +352,10 @@ func attrsToMap(attrs []esixml.Attr) map[string]string {
 }
 
 func (p *Processor) include(ctx context.Context, inc *esi.IncludeElement) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	meta := attrsToMap(inc.Attr)
 
 	data, err := p.includeURL(ctx, inc.Source, meta)
@@ -375,62 +384,39 @@ func (p *Processor) includeURL(ctx context.Context, urlStr string, meta map[stri
 	return p.opts.incFunc(ctx, urlStr, meta)
 }
 
-func (p *Processor) handleInclude(item *includePromise) {
+func (p *Processor) handleInclude(item *include) {
 	defer close(item.done)
 	item.data, item.err = p.include(item.ctx, item.inc)
 }
 
 func (p *Processor) handleIncludes() {
 	for {
-		select {
-		case <-p.ctx.Done():
+		item, ok := p.incQueue.pop(p.ctx.Done())
+		if !ok {
 			return
-		case item := <-p.ch:
-			p.handleInclude(item)
 		}
+		p.handleInclude(item)
 	}
 }
 
-func (p *Processor) queueInclude(ctx context.Context, inc *esi.IncludeElement) (*includePromise, error) {
+func (p *Processor) queueInclude(ctx context.Context, inc *esi.IncludeElement) (*include, error) {
 	if p.opts.incFunc == nil {
 		return nil, &UnsupportedElementError{Element: inc}
 	}
 
-	item := &includePromise{
+	item := &include{
 		ctx:  ctx,
 		inc:  inc,
 		done: make(chan struct{}),
 	}
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case p.ch <- item:
-		return item, nil
-	}
+	p.incQueue.push(item)
+
+	return item, nil
 }
 
-func (p *Processor) tryQueueInclude(ctx context.Context, inc *esi.IncludeElement) *includePromise {
-	if p.opts.incFunc == nil {
-		return nil
-	}
-
-	f := &includePromise{
-		ctx:  ctx,
-		inc:  inc,
-		done: make(chan struct{}),
-	}
-
-	select {
-	case p.ch <- f:
-		return f
-	default:
-		return nil
-	}
-}
-
-func (p *Processor) tryQueueFetches(ctx context.Context, nodes []esi.Node) map[esi.Node]*includePromise {
-	var m map[esi.Node]*includePromise
+func (p *Processor) queueIncludes(ctx context.Context, nodes []esi.Node) (map[esi.Node]*include, error) {
+	var m map[esi.Node]*include
 
 	for _, node := range nodes {
 		inc, ok := node.(*esi.IncludeElement)
@@ -438,17 +424,17 @@ func (p *Processor) tryQueueFetches(ctx context.Context, nodes []esi.Node) map[e
 			continue
 		}
 
-		f := p.tryQueueInclude(ctx, inc)
-		if f == nil {
-			continue
+		item, err := p.queueInclude(ctx, inc)
+		if err != nil {
+			return nil, err
 		}
 
 		if m == nil {
-			m = make(map[esi.Node]*includePromise)
+			m = make(map[esi.Node]*include)
 		}
 
-		m[inc] = f
+		m[inc] = item
 	}
 
-	return m
+	return m, nil
 }
