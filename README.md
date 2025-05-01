@@ -1,4 +1,4 @@
-# go-esi [![Go Reference](https://pkg.go.dev/badge/github.com/nussjustin/esi.svg)](https://pkg.go.dev/github.com/nussjustin/esi) [![Lint](https://github.com/nussjustin/esi/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/nussjustin/esi/actions/workflows/golangci-lint.yml) [![Test](https://github.com/nussjustin/esi/actions/workflows/test.yml/badge.svg)](https://github.com/nussjustin/esi/actions/workflows/test.yml)
+# esi [![Go Reference](https://pkg.go.dev/badge/github.com/nussjustin/esi.svg)](https://pkg.go.dev/github.com/nussjustin/esi) [![Lint](https://github.com/nussjustin/esi/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/nussjustin/esi/actions/workflows/golangci-lint.yml) [![Test](https://github.com/nussjustin/esi/actions/workflows/test.yml/badge.svg)](https://github.com/nussjustin/esi/actions/workflows/test.yml)
 
 Package esi provides functions for parsing and processing [ESI](https://www.w3.org/TR/esi-lang/) from arbitrary inputs.
 
