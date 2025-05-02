@@ -949,10 +949,11 @@ func TestParseVariable(t *testing.T) {
 }
 
 func BenchmarkParse(b *testing.B) {
-	b.ReportAllocs()
-
 	const expr = `$(VAR1{key1}|$(DEFAULT{key2}|none)) < -12.34 & ((
 				false == $(VAR2)) | 	true & !(null == null) ) != 'quoted'`
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(expr)))
 
 	var p ast.Parser[string]
 
