@@ -11,29 +11,6 @@ import (
 	"unicode/utf8"
 )
 
-var stringsMap = map[string]string{
-	"alt":       "alt",
-	"attempt":   "attempt",
-	"choose":    "choose",
-	"comment":   "comment",
-	"continue":  "continue",
-	"esi":       "esi",
-	"except":    "except",
-	"fetchable": "fetchable",
-	"include":   "include",
-	"inline":    "inline",
-	"name":      "name",
-	"onerror":   "onerror",
-	"otherwise": "otherwise",
-	"remove":    "remove",
-	"src":       "src",
-	"test":      "test",
-	"text":      "text",
-	"try":       "try",
-	"vars":      "vars",
-	"when":      "when",
-}
-
 func bytesToName(b []byte) Name {
 	ns, name, ok := bytes.Cut(b, []byte(":"))
 	if !ok {
@@ -43,11 +20,50 @@ func bytesToName(b []byte) Name {
 }
 
 func bytesToString(b []byte) string {
-	s, ok := stringsMap[string(b)]
-	if !ok {
-		return string(b)
+	// Using a switch is measurably faster than a map
+	switch string(b) {
+	case "alt":
+		return "alt"
+	case "attempt":
+		return "attempt"
+	case "choose":
+		return "choose"
+	case "comment":
+		return "comment"
+	case "continue":
+		return "continue"
+	case "esi":
+		return "esi"
+	case "except":
+		return "except"
+	case "fetchable":
+		return "fetchable"
+	case "include":
+		return "include"
+	case "inline":
+		return "inline"
+	case "name":
+		return "name"
+	case "onerror":
+		return "onerror"
+	case "otherwise":
+		return "otherwise"
+	case "remove":
+		return "remove"
+	case "src":
+		return "src"
+	case "test":
+		return "test"
+	case "text":
+		return "text"
+	case "try":
+		return "try"
+	case "vars":
+		return "vars"
+	case "when":
+		return "when"
 	}
-	return s
+	return string(b)
 }
 
 // DuplicateAttributeError is returned when encountering an ESI element with duplicate attributes.
