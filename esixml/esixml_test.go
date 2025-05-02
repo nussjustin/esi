@@ -1106,8 +1106,6 @@ func TestReader(t *testing.T) {
 }
 
 func BenchmarkReader(b *testing.B) {
-	b.ReportAllocs()
-
 	var r esixml.Reader
 
 	data := []byte(strings.TrimSpace(`
@@ -1170,6 +1168,9 @@ func BenchmarkReader(b *testing.B) {
 
 <footer>Footer</footer>`,
 	))
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
 
 	for b.Loop() {
 		r.Reset(data)
