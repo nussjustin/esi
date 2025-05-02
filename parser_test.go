@@ -1272,8 +1272,6 @@ func TestParse(t *testing.T) {
 }
 
 func BenchmarkParse(b *testing.B) {
-	b.ReportAllocs()
-
 	input := []byte(strings.TrimSpace(`
 <header>Header</header>
 
@@ -1333,6 +1331,9 @@ func BenchmarkParse(b *testing.B) {
 <name:spaced-element></name:spaced-element>
 
 <footer>Footer</footer>`))
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(input)))
 
 	for b.Loop() {
 		if _, err := esi.Parse(input); err != nil {
