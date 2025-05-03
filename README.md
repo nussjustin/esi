@@ -6,12 +6,27 @@ Package esi provides functions for parsing and processing [ESI](https://www.w3.o
 
 ### Parsing documents containing ESI
 
-To parse ESI from arbitrary input, use the [esi.Parse][0] function.
+To parse ESI from arbitrary `io.Reader`, first create a new [esi.Parser][0] using [esi.NewParser][8].
 
 ```go
-nodes, err := esi.Parse(`<p>Hello <esi:include src="/me"/></p>`)
-if err != nil {
-    panic(err)
+parser := esi.NewParser(reader)
+```
+
+It is also possible to initialize or re-use a parser from an existing instance, using [Parser.Reset][9]:
+
+```
+var parser esi.Parser
+parser.Reset(reader)
+```
+
+Once the parser has been created, either use [Parser.Next][10] to read each node from the input, or, use
+[Parser.All][11] to directly iterate over the stream of nodes:
+
+```go
+for node, err := parser.All {
+    if err != nil {
+        panic(err)
+    }
 }
 ```
 
@@ -49,9 +64,28 @@ proc := esiproc.New(
 
 Once created the processor can be used to process multiple sets of nodes, both sequentially and concurrently.
 
-Now the processor can be used like this:
+To actually process some data, call the [Processor.Process][12] method. The method takes a `context.Context`, an
+`io.Writer` that will be written to and a slice of ESI nodes. 
+
+Assuming the variable `parser` contains a `esi.Parser`, one could process its nodes like this:
+
+_NOTE: The requirement to pass a whole slice of nodes is currently a limitation and is expected to be lifted in the
+future._
+
+_When that happens, the signature of `Processor.Process` will likely be changed to take an
+`iter.Seq2[esi.Node, error]` instead._
 
 ```go
+var nodes []esi.Node
+
+for node, err := parser.All {
+    if err != nil {
+        panic(err)	
+    }
+	
+    nodes = append(nodes, node)
+}
+
 var buf bytes.Buffer
 
 if err := proc.Process(ctx, &buf, nodes); err != nil {
@@ -101,3 +135,8 @@ Please make sure to update tests as appropriate.
 [5]: https://pkg.go.dev/github.com/nussjustin/esi/esiexpr/
 [6]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#WithEnv
 [7]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor.Release
+[8]: https://pkg.go.dev/github.com/nussjustin/esi/#NewParser
+[9]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.Reset
+[10]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.Next
+[11]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.All
+[12]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor.Process

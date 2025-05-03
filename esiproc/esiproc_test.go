@@ -44,6 +44,19 @@ func (t testEnv) Interpolate(_ context.Context, s string) (string, error) {
 	return s, nil
 }
 
+func parseESI(input string) ([]esi.Node, error) {
+	nodes := make([]esi.Node, 0, 32)
+
+	for node, err := range esi.NewParser(strings.NewReader(input)).All {
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, node)
+	}
+
+	return nodes, nil
+}
+
 func TestProcessor(t *testing.T) {
 	testCases := []struct {
 		Name       string
@@ -350,7 +363,7 @@ func TestProcessor(t *testing.T) {
 			if nodes == nil {
 				var err error
 
-				if nodes, err = esi.Parse([]byte(testCase.Input)); err != nil {
+				if nodes, err = parseESI(testCase.Input); err != nil {
 					t.Fatalf("failed to parse test input: %s", err)
 				}
 			}

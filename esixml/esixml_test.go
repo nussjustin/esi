@@ -2,7 +2,6 @@ package esixml_test
 
 import (
 	"errors"
-	"io"
 	"math"
 	"strings"
 	"testing"
@@ -85,7 +84,7 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "self-closing element with space after /",
 			Input: `<esi:element/ >`,
-			Error: &esixml.SyntaxError{Offset: 13, Message: "expected '>'"},
+			Error: &esixml.UnexpectedCharacterError{At: 13, Got: ' ', Expected: '>'},
 		},
 		{
 			Name:  "self-closing element with attributes",
@@ -124,7 +123,7 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "self-closing element with attributes and space after /",
 			Input: `<esi:element attr1=value1 attr2="value2" attr3='value3' ns:attr4="value4"/ >`,
-			Error: &esixml.SyntaxError{Offset: 74, Message: "expected '>'"},
+			Error: &esixml.UnexpectedCharacterError{At: 74, Got: ' ', Expected: '>'},
 		},
 		{
 			Name:  "end element",
@@ -140,7 +139,7 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "end element with attributes",
 			Input: `</esi:element attr1=value1>`,
-			Error: &esixml.SyntaxError{Offset: 14, Message: "expected '>'"},
+			Error: &esixml.UnexpectedCharacterError{At: 14, Got: 'a', Expected: '>'},
 		},
 		{
 			Name:  "end element with space before /",
@@ -284,7 +283,7 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "no equals after attribute name",
 			Input: `<esi:element attr>`,
-			Error: &esixml.SyntaxError{Offset: 17, Message: "expected '='"},
+			Error: &esixml.UnexpectedCharacterError{At: 17, Got: '>', Expected: '='},
 		},
 		{
 			Name:  "unquoted attribute value before end",
@@ -326,22 +325,22 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "EOF after attribute name",
 			Input: `<esi:element attr`,
-			Error: &esixml.SyntaxError{Offset: 17, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF},
+			Error: &esixml.UnexpectedEndOfInput{At: 17, Expected: '='},
 		},
 		{
 			Name:  "EOF after attribute equals",
 			Input: `<esi:element attr=`,
-			Error: &esixml.SyntaxError{Offset: 18, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF},
+			Error: &esixml.UnexpectedEndOfInput{At: 18},
 		},
 		{
 			Name:  "EOF in quoted attribute value",
 			Input: `<esi:element attr="value`,
-			Error: &esixml.SyntaxError{Offset: 24, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF},
+			Error: &esixml.UnexpectedEndOfInput{At: 24},
 		},
 		{
 			Name:  "EOF in unquoted attribute value",
 			Input: `<esi:element attr=value`,
-			Error: &esixml.SyntaxError{Offset: 23, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF},
+			Error: &esixml.UnexpectedEndOfInput{At: 23},
 		},
 		{
 			Name:  "Invalid character at element name start",
@@ -357,47 +356,47 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "Invalid character in element name",
 			Input: `<esi:el^ement>`,
-			Error: &esixml.SyntaxError{Offset: 7, Message: "invalid name character"},
+			Error: &esixml.InvalidNameError{At: 7},
 		},
 		{
 			Name:  "Invalid character at attribute name start",
 			Input: `<esi:element ^attr=value>`,
-			Error: &esixml.SyntaxError{Offset: 13, Message: "invalid name character"},
+			Error: &esixml.InvalidNameError{At: 13},
 		},
 		{
 			Name:  "Invalid character in attribute name",
 			Input: `<esi:element at^tr=value>`,
-			Error: &esixml.SyntaxError{Offset: 15, Message: "expected '='"},
+			Error: &esixml.UnexpectedCharacterError{At: 15, Got: '^', Expected: '='},
 		},
 		{
 			Name:  "Invalid element name",
 			Input: `<esi:e` + string([]byte{12}) + `lement>`,
-			Error: &esixml.SyntaxError{Offset: 6, Message: "invalid name character"},
+			Error: &esixml.InvalidNameError{At: 6},
 		},
 		{
 			Name:  "Invalid attribute name",
 			Input: `<esi:element at` + string([]byte{12}) + `tr=value>`,
-			Error: &esixml.SyntaxError{Offset: 15, Message: "expected '='"},
+			Error: &esixml.UnexpectedCharacterError{At: 15, Got: 12, Expected: '='},
 		},
 		{
 			Name:  "Invalid attribute name start",
 			Input: `<esi:element -attr=value>`,
-			Error: &esixml.SyntaxError{Offset: 13, Message: "invalid name"},
+			Error: &esixml.InvalidNameError{At: 13},
 		},
 		{
 			Name:  "Invalid character after escape sequence",
 			Input: `<esi:element attr="&#o;">`,
-			Error: &esixml.SyntaxError{Offset: 22, Message: "expected ';'"},
+			Error: &esixml.UnexpectedCharacterError{At: 21, Got: 'o'},
 		},
 		{
 			Name:  "Invalid character after escape sequence number",
 			Input: `<esi:element attr="&#1">`,
-			Error: &esixml.SyntaxError{Offset: 23, Message: "expected ';'"},
+			Error: &esixml.UnexpectedCharacterError{At: 22, Got: '"', Expected: ';'},
 		},
 		{
 			Name:  "Invalid character after entity",
 			Input: `<esi:element attr="&entity!">`,
-			Error: &esixml.SyntaxError{Offset: 27, Message: "expected ';'"},
+			Error: &esixml.UnexpectedCharacterError{At: 26, Got: '!', Expected: ';'},
 		},
 		{
 			Name:  "\\r to \\n in attribute value",
@@ -439,29 +438,29 @@ func TestReader(t *testing.T) {
 			Name:  "duplicate attribute name",
 			Input: `<esi:element attr1=value attr2=value2 attr1=value3>`,
 			Error: &esixml.DuplicateAttributeError{
-				Offset: 38,
-				Name:   "attr1",
+				At:   38,
+				Name: "attr1",
 			},
 		},
 		{
 			Name:  "EOF after escape sequence start",
 			Input: `<esi:element attr="&`,
-			Error: &esixml.SyntaxError{Offset: 20, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF},
+			Error: &esixml.UnexpectedEndOfInput{At: 20},
 		},
 		{
 			Name:  "EOF after escape sequence",
 			Input: `<esi:element attr="&amp`,
-			Error: &esixml.SyntaxError{Offset: 23, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF},
+			Error: &esixml.UnexpectedEndOfInput{At: 23, Expected: ';'},
 		},
 		{
 			Name:  "EOF after numeric escape sequence start",
 			Input: `<esi:element attr="&#`,
-			Error: &esixml.SyntaxError{Offset: 21, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF},
+			Error: &esixml.UnexpectedEndOfInput{At: 21},
 		},
 		{
 			Name:  "EOF after numeric escape sequence",
 			Input: `<esi:element attr="&#1`,
-			Error: &esixml.SyntaxError{Offset: 22, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF},
+			Error: &esixml.UnexpectedEndOfInput{At: 22},
 		},
 		{
 			Name:  "entity reference in attribute value",
@@ -489,7 +488,7 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "namespaced entity reference in attribute value",
 			Input: `<esi:element attr="a &ns:amp; b">`,
-			Error: &esixml.SyntaxError{Offset: 22, Message: "name without namespace expected"},
+			Error: &esixml.SyntaxError{At: 22, Message: "name without namespace expected"},
 		},
 		{
 			Name:  "base10 escaped rune in attribute value",
@@ -512,7 +511,7 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "invalid base10 escaped rune in attribute value",
 			Input: `<esi:element attr="does this work&#99999999999;">`,
-			Error: &esixml.SyntaxError{Offset: 36, Message: "invalid number in escape sequence"},
+			Error: &esixml.SyntaxError{At: 36, Message: "invalid number in escape sequence"},
 		},
 		{
 			Name:  "base16 escaped rune in attribute value",
@@ -535,7 +534,7 @@ func TestReader(t *testing.T) {
 		{
 			Name:  "invalid base16 escaped rune in attribute value",
 			Input: `<esi:element attr="does this work&#xFGF;">`,
-			Error: &esixml.SyntaxError{Offset: 38, Message: "expected ';'"},
+			Error: &esixml.UnexpectedCharacterError{At: 37, Got: 'G', Expected: ';'},
 		},
 
 		{
@@ -1071,7 +1070,7 @@ func TestReader(t *testing.T) {
 			var gotTokens []esixml.Token
 			var gotErr error
 
-			r := esixml.NewReader([]byte(input))
+			r := esixml.NewReader(strings.NewReader(input))
 
 			for token, err := range r.All {
 				if err != nil {
@@ -1108,7 +1107,7 @@ func TestReader(t *testing.T) {
 func BenchmarkReader(b *testing.B) {
 	var r esixml.Reader
 
-	data := []byte(strings.TrimSpace(`
+	data := strings.TrimSpace(`
 <header>Header</header>
 
 <esi:include src="https://example.com/1.html" alt="https://bak.example.com/2.html" onerror="continue"/>
@@ -1167,13 +1166,16 @@ func BenchmarkReader(b *testing.B) {
 <name:spaced-element></name:spaced-element>
 
 <footer>Footer</footer>`,
-	))
+	)
+
+	sr := strings.NewReader(data)
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(data)))
 
 	for b.Loop() {
-		r.Reset(data)
+		sr.Reset(data)
+		r.Reset(sr)
 
 		for _, err := range r.All {
 			if err != nil {

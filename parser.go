@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"sync"
 
 	"github.com/nussjustin/esi/esixml"
 )
@@ -410,8 +409,8 @@ type InlineElement struct {
 	// Fragment is true if the fragment can be fetched.
 	Fetchable bool
 
-	// Data contains the unprocessed content of the element.
-	Data RawData
+	// Nodes contains all child nodes of the element.
+	Nodes []Node
 }
 
 var _ Element = (*InlineElement)(nil)
@@ -481,8 +480,8 @@ type RemoveElement struct {
 	// Attr contains all non-standard attributes specified on the element.
 	Attr []esixml.Attr
 
-	// Data contains the unprocessed data of the element.
-	Data RawData
+	// Nodes contains all child nodes of the element.
+	Nodes []Node
 }
 
 var _ Element = (*RemoveElement)(nil)
@@ -586,65 +585,100 @@ func (e *WhenElement) Pos() (start, end int) {
 	return e.Position.Pos()
 }
 
-type parser struct {
-	data []byte
-
+// Parser implements parsing of documents containing ESI instructions, returning the parsed elements and the unprocessed
+// data.
+type Parser struct {
 	reader      esixml.Reader
 	unreadToken esixml.Token
+	err         error
 
-	nodes [][]Node
+	// current stack. nil values mark the start of a scope.
+	stack []Node
 
-	stateFn func(*parser) error
+	stateFn func(*Parser) (Node, error)
 }
 
-var parserPool = sync.Pool{
-	New: func() any {
-		return &parser{}
-	},
-}
-
-func getParser(data []byte) *parser {
-	p, _ := parserPool.Get().(*parser)
-	p.reset(data)
+// NewParser returns a new Parser set to read from in.
+//
+// This is a shorthand for creating a new [Parser] and calling [Parser.Reset] on it.
+func NewParser(in io.Reader) *Parser {
+	p := &Parser{}
+	p.Reset(in)
 	return p
 }
 
-func putParser(p *parser) {
-	p.reset(nil)
-	parserPool.Put(p)
+// All yields all remaining nodes from the parser.
+func (p *Parser) All(yield func(Node, error) bool) {
+	for {
+		node, err := p.Next()
+
+		if errors.Is(err, io.EOF) {
+			return
+		}
+
+		if !yield(node, err) {
+			return
+		}
+
+		if err != nil {
+			return
+		}
+	}
 }
 
-// Parse parses the given []byte and returns all ESI elements as well as any non-ESI data.
-func Parse(data []byte) ([]Node, error) {
-	p := getParser(data)
-	defer putParser(p)
+// Next returns the next Node if any.
+//
+// If an error occurred, future calls till return the same error.
+//
+// After all data was read, if there were no previous errors, Next will return [io.EOF].
+func (p *Parser) Next() (Node, error) {
+	var node Node
 
-	for {
-		if err := p.stateFn(p); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
+	for p.err == nil {
+		node, p.err = p.stateFn(p)
 
-			return nil, err
+		if node != nil {
+			return node, nil
 		}
 	}
 
-	if parent := p.currentParent(); parent != nil {
-		start, end := parent.Pos()
+	if !errors.Is(p.err, io.EOF) {
+		return nil, p.err
+	}
+
+	if el := p.currentScope(); el != nil {
+		start, end := el.Pos()
 
 		return nil, &UnclosedElementError{
 			Position: Position{
 				Start: start,
 				End:   end,
 			},
-			Name: parent.(Element).Name(),
+			Name: el.(Element).Name(),
 		}
 	}
 
-	return p.nodes[0], nil
+	return nil, io.EOF
 }
 
-func (p *parser) next() (esixml.Token, error) {
+// Reset resets the Parser to read from in.
+//
+// This allows re-using the parser for different inputs.
+func (p *Parser) Reset(in io.Reader) {
+	if len(p.stack) == 0 || cap(p.stack) > 32 {
+		p.stack = make([]Node, 0, 32)
+	} else {
+		clear(p.stack)
+	}
+
+	p.err = nil
+	p.stack = p.stack[:0]
+	p.unreadToken = esixml.Token{}
+	p.stateFn = (*Parser).parseDataOrElement
+	p.reader.Reset(in)
+}
+
+func (p *Parser) nextToken() (esixml.Token, error) {
 	if p.unreadToken.Type != esixml.TokenTypeInvalid {
 		t := p.unreadToken
 		p.unreadToken = esixml.Token{}
@@ -654,8 +688,8 @@ func (p *parser) next() (esixml.Token, error) {
 	return p.reader.Next()
 }
 
-func (p *parser) mustNext() (esixml.Token, error) {
-	tok, err := p.next()
+func (p *Parser) mustNextToken() (esixml.Token, error) {
+	tok, err := p.nextToken()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			err = io.ErrUnexpectedEOF
@@ -665,8 +699,8 @@ func (p *parser) mustNext() (esixml.Token, error) {
 	return tok, nil
 }
 
-func (p *parser) mustNextTyped(typ esixml.TokenType) (esixml.Token, error) {
-	tok, err := p.mustNext()
+func (p *Parser) mustNextTyped(typ esixml.TokenType) (esixml.Token, error) {
+	tok, err := p.mustNextToken()
 	if err != nil {
 		return esixml.Token{}, err
 	}
@@ -680,13 +714,13 @@ func (p *parser) mustNextTyped(typ esixml.TokenType) (esixml.Token, error) {
 	return tok, nil
 }
 
-func (p *parser) mustNextEndElement(localName string) (esixml.Token, error) {
+func (p *Parser) mustNextEndElement(localName string) (esixml.Token, error) {
 	tok, err := p.mustNextTyped(esixml.TokenTypeEndElement)
 	if err != nil {
 		return esixml.Token{}, err
 	}
 	if tok.Name.Local != localName {
-		return esixml.Token{}, &UnexpectedElementError{
+		return esixml.Token{}, &UnexpectedEndElementError{
 			Position: tok.Position,
 			Name:     tok.Name,
 		}
@@ -694,7 +728,7 @@ func (p *parser) mustNextEndElement(localName string) (esixml.Token, error) {
 	return tok, nil
 }
 
-func (p *parser) mustNextStartElement(localName string) (esixml.Token, error) {
+func (p *Parser) mustNextStartElement(localName string) (esixml.Token, error) {
 	tok, err := p.mustNextTyped(esixml.TokenTypeStartElement)
 	if err != nil {
 		return esixml.Token{}, err
@@ -708,32 +742,74 @@ func (p *parser) mustNextStartElement(localName string) (esixml.Token, error) {
 	return tok, nil
 }
 
-func (p *parser) currentParent() Node {
-	level := len(p.nodes) - 2
-	if level < 0 || len(p.nodes[level]) == 0 {
+func (p *Parser) current() Node {
+	if len(p.stack) == 0 {
 		return nil
 	}
-	return p.nodes[level][len(p.nodes[level])-1]
+	return p.stack[len(p.stack)-1]
 }
 
-func (p *parser) push(node Node) {
-	level := len(p.nodes) - 1
-	if p.nodes[level] == nil {
-		p.nodes[level] = make([]Node, 0, 32)
+func (p *Parser) currentScope() Node {
+	for i := len(p.stack) - 1; i >= 1; i-- {
+		if p.stack[i] != nil {
+			continue
+		}
+		return p.stack[i-1]
 	}
-	p.nodes[level] = append(p.nodes[level], node)
+
+	return nil
 }
 
-func (p *parser) pushAndEnter(node Element) {
-	level := len(p.nodes) - 1
-	p.nodes[level] = append(p.nodes[level], node)
-	p.nodes = append(p.nodes, make([]Node, 0, 4))
+func (p *Parser) exitScope() []Node {
+	for i := len(p.stack) - 1; i >= 0; i-- {
+		if p.stack[i] != nil {
+			continue
+		}
+
+		var nodes []Node
+		p.stack, nodes = p.stack[:i], p.stack[i+1:]
+
+		if len(nodes) == 0 {
+			return nil
+		}
+
+		return slices.Clone(nodes)
+	}
+
+	panic("no open scope")
 }
 
-func (p *parser) exit() []Node {
-	nodes := p.nodes[len(p.nodes)-1]
-	p.nodes = p.nodes[:len(p.nodes)-1]
-	return nodes
+func (p *Parser) popIfRoot() Node {
+	if len(p.stack) != 1 {
+		return nil
+	}
+	node := p.stack[0]
+	p.stack = p.stack[:0]
+	return node
+}
+
+func (p *Parser) push(node Node) {
+	if node == nil {
+		panic("tried to push nil node")
+	}
+	p.stack = append(p.stack, node)
+}
+
+func (p *Parser) pushScope(node Node) {
+	if node == nil {
+		panic("tried to push nil node for scope")
+	}
+	p.stack = append(p.stack, node, nil)
+}
+
+func (p *Parser) pushNestedOrReturn(node Node) Node {
+	if len(p.stack) == 0 {
+		return node
+	}
+
+	p.push(node)
+
+	return nil
 }
 
 func takeAttr(attrs *[]esixml.Attr, name string) (esixml.Attr, bool) {
@@ -754,258 +830,272 @@ func takeAttr(attrs *[]esixml.Attr, name string) (esixml.Attr, bool) {
 	return esixml.Attr{}, false
 }
 
-func (p *parser) parseAttemptElement() error {
+func (p *Parser) parseAttemptElement() (Node, error) {
 	tok, err := p.mustNextStartElement("attempt")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if _, ok := p.currentParent().(*TryElement); !ok {
-		return &UnexpectedElementError{Position: tok.Position, Name: tok.Name}
+	if _, ok := p.currentScope().(*TryElement); !ok {
+		return nil, &UnexpectedElementError{Position: tok.Position, Name: tok.Name}
 	}
 
-	p.pushAndEnter(&AttemptElement{Position: tok.Position, Attr: tok.Attr})
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.pushScope(&AttemptElement{Position: tok.Position, Attr: tok.Attr})
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseAttemptElementEnd() error {
+func (p *Parser) parseAttemptElementEnd() (Node, error) {
 	tok, err := p.mustNextEndElement("attempt")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parent, _ := p.currentParent().(*AttemptElement)
-	parent.Position.End = tok.Position.End
-	parent.Nodes = p.exit()
+	children := p.exitScope()
 
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	el := p.current().(*AttemptElement)
+	el.Nodes = children
+	el.Position.End = tok.Position.End
+
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseChooseElement() error {
+func (p *Parser) parseChooseElement() (Node, error) {
 	tok, err := p.mustNextStartElement("choose")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if tok.Closed {
-		return &EmptyElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &EmptyElementError{Position: tok.Position, Name: tok.Name}
 	}
 
-	p.pushAndEnter(&ChooseElement{Position: tok.Position, Attr: tok.Attr})
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.pushScope(&ChooseElement{Position: tok.Position, Attr: tok.Attr})
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseChooseElementEnd() error {
+func (p *Parser) parseChooseElementEnd() (Node, error) {
 	tok, err := p.mustNextEndElement("choose")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parent, _ := p.currentParent().(*ChooseElement)
-	parent.Position.End = tok.Position.End
+	children := p.exitScope()
 
-	nodes := p.exit()
+	el := p.current().(*ChooseElement)
+	el.Position.End = tok.Position.End
 
-	for _, node := range nodes {
+	for _, node := range children {
 		switch v := node.(type) {
 		case *WhenElement:
-			parent.When = append(parent.When, v)
+			el.When = append(el.When, v)
 		case *OtherwiseElement:
-			if parent.Otherwise != nil {
-				return &DuplicateElementError{Position: v.Position, Name: v.Name()}
+			if el.Otherwise != nil {
+				return nil, &DuplicateElementError{Position: v.Position, Name: v.Name()}
 			}
-			parent.Otherwise = v
+			el.Otherwise = v
 		default:
 			// ignore other data, as per spec
 		}
 	}
 
-	if len(parent.When) == 0 {
-		return &MissingElementError{Position: tok.Position, Name: esixml.Name{Space: "esi", Local: "when"}}
+	if len(el.When) == 0 {
+		return nil, &MissingElementError{Position: tok.Position, Name: esixml.Name{Space: "esi", Local: "when"}}
 	}
 
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.stateFn = (*Parser).parseDataOrElement
+	return p.popIfRoot(), nil
 }
 
-func (p *parser) parseCommentElement() error {
+func (p *Parser) parseCommentElement() (Node, error) {
 	tok, err := p.mustNextStartElement("comment")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if !tok.Closed {
-		return &UnclosedElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &UnclosedElementError{Position: tok.Position, Name: tok.Name}
 	}
 
 	text, ok := takeAttr(&tok.Attr, "text")
 	if !ok {
-		return &MissingAttributeError{Position: tok.Position, Element: tok.Name, Attribute: esixml.Name{Local: "text"}}
+		return nil, &MissingAttributeError{
+			Position:  tok.Position,
+			Element:   tok.Name,
+			Attribute: esixml.Name{Local: "text"},
+		}
 	}
 
-	p.push(&CommentElement{
+	p.stateFn = (*Parser).parseDataOrElement
+
+	return p.pushNestedOrReturn(&CommentElement{
 		Position: tok.Position,
 		Attr:     tok.Attr,
 		Text:     text.Value,
-	})
-
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	}), nil
 }
 
-func (p *parser) parseData() error {
+func (p *Parser) parseData() (Node, error) {
 	tok, err := p.mustNextTyped(esixml.TokenTypeData)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	p.push(&RawData{Position: tok.Position, Bytes: tok.Data})
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.stateFn = (*Parser).parseDataOrElement
+
+	return p.pushNestedOrReturn(&RawData{
+		Position: tok.Position,
+		Bytes:    tok.Data,
+	}), nil
 }
 
-func (p *parser) parseDataOrElement() error {
-	tok, err := p.next()
+func (p *Parser) parseDataOrElement() (Node, error) {
+	tok, err := p.nextToken()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	switch tok.Type {
 	case esixml.TokenTypeInvalid:
 		panic("unreachable")
 	case esixml.TokenTypeStartElement:
-		p.stateFn = (*parser).parseElement
+		p.stateFn = (*Parser).parseElement
 	case esixml.TokenTypeEndElement:
-		p.stateFn = (*parser).parseEndElement
+		p.stateFn = (*Parser).parseEndElement
 	case esixml.TokenTypeData:
-		p.stateFn = (*parser).parseData
+		p.stateFn = (*Parser).parseData
 	}
 
 	p.unreadToken = tok
-	return nil
+	return nil, nil
 }
 
-func (p *parser) parseElement() error {
+func (p *Parser) parseElement() (Node, error) {
 	tok, err := p.mustNextTyped(esixml.TokenTypeStartElement)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	switch tok.Name.Local {
 	case "attempt":
-		p.stateFn = (*parser).parseAttemptElement
+		p.stateFn = (*Parser).parseAttemptElement
 	case "choose":
-		p.stateFn = (*parser).parseChooseElement
+		p.stateFn = (*Parser).parseChooseElement
 	case "comment":
-		p.stateFn = (*parser).parseCommentElement
+		p.stateFn = (*Parser).parseCommentElement
 	case "except":
-		p.stateFn = (*parser).parseExceptElement
+		p.stateFn = (*Parser).parseExceptElement
 	case "include":
-		p.stateFn = (*parser).parseIncludeElement
+		p.stateFn = (*Parser).parseIncludeElement
 	case "inline":
-		p.stateFn = (*parser).parseInlineElement
+		p.stateFn = (*Parser).parseInlineElement
 	case "otherwise":
-		p.stateFn = (*parser).parseOtherwiseElement
+		p.stateFn = (*Parser).parseOtherwiseElement
 	case "remove":
-		p.stateFn = (*parser).parseRemoveElement
+		p.stateFn = (*Parser).parseRemoveElement
 	case "try":
-		p.stateFn = (*parser).parseTryElement
+		p.stateFn = (*Parser).parseTryElement
 	case "vars":
-		p.stateFn = (*parser).parseVarsElement
+		p.stateFn = (*Parser).parseVarsElement
 	case "when":
-		p.stateFn = (*parser).parseWhenElement
+		p.stateFn = (*Parser).parseWhenElement
 	default:
-		return &InvalidElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &InvalidElementError{Position: tok.Position, Name: tok.Name}
 	}
 
 	p.unreadToken = tok
-	return nil
+	return nil, nil
 }
 
-func (p *parser) parseEndElement() error {
+func (p *Parser) parseEndElement() (Node, error) {
 	tok, err := p.mustNextTyped(esixml.TokenTypeEndElement)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parent, _ := p.currentParent().(Element)
+	parent, _ := p.currentScope().(Element)
 	if parent == nil {
-		return &UnexpectedEndElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &UnexpectedEndElementError{Position: tok.Position, Name: tok.Name}
 	}
 	if parent.Name() != tok.Name {
-		return &UnexpectedEndElementError{Position: tok.Position, Name: tok.Name, Expected: parent.Name()}
+		return nil, &UnexpectedEndElementError{Position: tok.Position, Name: tok.Name, Expected: parent.Name()}
 	}
 
 	switch tok.Name.Local {
 	case "attempt":
-		p.stateFn = (*parser).parseAttemptElementEnd
+		p.stateFn = (*Parser).parseAttemptElementEnd
 	case "choose":
-		p.stateFn = (*parser).parseChooseElementEnd
+		p.stateFn = (*Parser).parseChooseElementEnd
 	case "except":
-		p.stateFn = (*parser).parseExceptElementEnd
+		p.stateFn = (*Parser).parseExceptElementEnd
+	case "inline":
+		p.stateFn = (*Parser).parseInlineElementEnd
 	case "otherwise":
-		p.stateFn = (*parser).parseOtherwiseElementEnd
+		p.stateFn = (*Parser).parseOtherwiseElementEnd
+	case "remove":
+		p.stateFn = (*Parser).parseRemoveElementEnd
 	case "try":
-		p.stateFn = (*parser).parseTryElementEnd
+		p.stateFn = (*Parser).parseTryElementEnd
 	case "vars":
-		p.stateFn = (*parser).parseVarsElementEnd
+		p.stateFn = (*Parser).parseVarsElementEnd
 	case "when":
-		p.stateFn = (*parser).parseWhenElementEnd
+		p.stateFn = (*Parser).parseWhenElementEnd
 	default:
-		return &InvalidElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &InvalidElementError{Position: tok.Position, Name: tok.Name}
 	}
 
 	p.unreadToken = tok
-	return nil
+	return nil, nil
 }
 
-func (p *parser) parseExceptElement() error {
+func (p *Parser) parseExceptElement() (Node, error) {
 	tok, err := p.mustNextStartElement("except")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if _, ok := p.currentParent().(*TryElement); !ok {
-		return &UnexpectedElementError{Position: tok.Position, Name: tok.Name}
+	if _, ok := p.currentScope().(*TryElement); !ok {
+		return nil, &UnexpectedElementError{Position: tok.Position, Name: tok.Name}
 	}
 
-	p.pushAndEnter(&ExceptElement{Position: tok.Position, Attr: tok.Attr})
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.pushScope(&ExceptElement{Position: tok.Position, Attr: tok.Attr})
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseExceptElementEnd() error {
+func (p *Parser) parseExceptElementEnd() (Node, error) {
 	tok, err := p.mustNextEndElement("except")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parent, _ := p.currentParent().(*ExceptElement)
-	parent.Position.End = tok.Position.End
-	parent.Nodes = p.exit()
+	children := p.exitScope()
 
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	el := p.current().(*ExceptElement)
+	el.Nodes = children
+	el.Position.End = tok.Position.End
+
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseIncludeElement() error {
+func (p *Parser) parseIncludeElement() (Node, error) {
 	tok, err := p.mustNextStartElement("include")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if !tok.Closed {
-		return &UnclosedElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &UnclosedElementError{Position: tok.Position, Name: tok.Name}
 	}
 
 	alt, _ := takeAttr(&tok.Attr, "alt")
 
 	onError, ok := takeAttr(&tok.Attr, "onerror")
 	if ok && onError.Value != string(ErrorBehaviourContinue) {
-		return &InvalidAttributeValueError{
+		return nil, &InvalidAttributeValueError{
 			Position: Position{Start: onError.Position.Start, End: onError.Position.End},
 			Element:  tok.Name,
 			Name:     esixml.Name{Local: "onerror"},
@@ -1018,41 +1108,48 @@ func (p *parser) parseIncludeElement() error {
 
 	src, ok := takeAttr(&tok.Attr, "src")
 	if !ok {
-		return &MissingAttributeError{Position: tok.Position, Element: tok.Name, Attribute: esixml.Name{Local: "src"}}
+		return nil, &MissingAttributeError{Position: tok.Position, Element: tok.Name, Attribute: esixml.Name{Local: "src"}}
 	}
 
-	p.push(&IncludeElement{
+	p.stateFn = (*Parser).parseDataOrElement
+
+	return p.pushNestedOrReturn(&IncludeElement{
 		Position: tok.Position,
 		Attr:     tok.Attr,
 		Alt:      alt.Value,
 		OnError:  ErrorBehaviour(onError.Value),
 		Source:   src.Value,
-	})
-
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	}), nil
 }
 
-func (p *parser) parseInlineElement() error {
+func (p *Parser) parseInlineElement() (Node, error) {
 	tok, err := p.mustNextStartElement("inline")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	name, ok := takeAttr(&tok.Attr, "name")
 	if !ok {
-		return &MissingAttributeError{Position: tok.Position, Element: tok.Name, Attribute: esixml.Name{Local: "name"}}
+		return nil, &MissingAttributeError{
+			Position:  tok.Position,
+			Element:   tok.Name,
+			Attribute: esixml.Name{Local: "name"},
+		}
 	}
 
 	fetchable, ok := takeAttr(&tok.Attr, "fetchable")
 	if !ok {
-		return &MissingAttributeError{Position: tok.Position, Element: tok.Name, Attribute: esixml.Name{Local: "fetchable"}}
+		return nil, &MissingAttributeError{
+			Position:  tok.Position,
+			Element:   tok.Name,
+			Attribute: esixml.Name{Local: "fetchable"},
+		}
 	}
 
 	switch fetchable.Value {
 	case "no", "yes":
 	default:
-		return &InvalidAttributeValueError{
+		return nil, &InvalidAttributeValueError{
 			Position: tok.Position,
 			Element:  tok.Name,
 			Name:     esixml.Name{Local: "fetchable"},
@@ -1062,235 +1159,219 @@ func (p *parser) parseInlineElement() error {
 	}
 
 	if tok.Closed {
-		return &EmptyElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &EmptyElementError{Position: tok.Position, Name: tok.Name}
 	}
 
-	e := &InlineElement{
+	p.pushScope(&InlineElement{
 		Position:     tok.Position,
 		Attr:         tok.Attr,
 		FragmentName: name.Value,
 		Fetchable:    fetchable.Value == "yes",
-	}
-	e.Data.Position.Start = tok.Position.End
-
-	p.pushAndEnter(e)
-
-	for {
-		tok, err := p.next()
-		if err != nil {
-			return err
-		}
-
-		if tok.Type != esixml.TokenTypeEndElement || tok.Name.Local != "inline" {
-			continue
-		}
-
-		e.Data.Bytes = slices.Clone(p.data[e.Data.Position.Start:tok.Position.Start])
-		e.Data.Position.End = tok.Position.Start
-		e.Position.End = tok.Position.End
-		p.exit()
-		break
-	}
-
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	})
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseOtherwiseElement() error {
+func (p *Parser) parseInlineElementEnd() (Node, error) {
+	tok, err := p.mustNextEndElement("inline")
+	if err != nil {
+		return nil, err
+	}
+
+	children := p.exitScope()
+
+	el := p.current().(*InlineElement)
+	el.Nodes = children
+	el.Position.End = tok.Position.End
+
+	p.stateFn = (*Parser).parseDataOrElement
+	return p.popIfRoot(), nil
+}
+
+func (p *Parser) parseOtherwiseElement() (Node, error) {
 	tok, err := p.mustNextStartElement("otherwise")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if _, ok := p.currentParent().(*ChooseElement); !ok {
-		return &UnexpectedElementError{Position: tok.Position, Name: tok.Name}
+	if _, ok := p.currentScope().(*ChooseElement); !ok {
+		return nil, &UnexpectedElementError{Position: tok.Position, Name: tok.Name}
 	}
 
-	p.pushAndEnter(&OtherwiseElement{Position: tok.Position, Attr: tok.Attr})
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.pushScope(&OtherwiseElement{Position: tok.Position, Attr: tok.Attr})
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseOtherwiseElementEnd() error {
+func (p *Parser) parseOtherwiseElementEnd() (Node, error) {
 	tok, err := p.mustNextEndElement("otherwise")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parent, _ := p.currentParent().(*OtherwiseElement)
-	parent.Position.End = tok.Position.End
-	parent.Nodes = p.exit()
+	children := p.exitScope()
 
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	el := p.current().(*OtherwiseElement)
+	el.Nodes = children
+	el.Position.End = tok.Position.End
+
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseRemoveElement() error {
+func (p *Parser) parseRemoveElement() (Node, error) {
 	tok, err := p.mustNextStartElement("remove")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if tok.Closed {
-		return &EmptyElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &EmptyElementError{Position: tok.Position, Name: tok.Name}
 	}
 
 	e := &RemoveElement{Position: tok.Position, Attr: tok.Attr}
-	e.Data.Position.Start = tok.Position.End
 
-	p.pushAndEnter(e)
-
-	for {
-		tok, err := p.next()
-		if err != nil {
-			return err
-		}
-
-		if tok.Type != esixml.TokenTypeEndElement || tok.Name.Local != "remove" {
-			continue
-		}
-
-		e.Data.Bytes = slices.Clone(p.data[e.Data.Position.Start:tok.Position.Start])
-		e.Data.Position.End = tok.Position.Start
-		e.Position.End = tok.Position.End
-		p.exit()
-		break
-	}
-
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.pushScope(e)
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseTryElement() error {
+func (p *Parser) parseRemoveElementEnd() (Node, error) {
+	tok, err := p.mustNextEndElement("remove")
+	if err != nil {
+		return nil, err
+	}
+
+	children := p.exitScope()
+
+	el := p.current().(*RemoveElement)
+	el.Nodes = children
+	el.Position.End = tok.Position.End
+
+	p.stateFn = (*Parser).parseDataOrElement
+	return p.popIfRoot(), nil
+}
+
+func (p *Parser) parseTryElement() (Node, error) {
 	tok, err := p.mustNextStartElement("try")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if tok.Closed {
-		return &EmptyElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &EmptyElementError{Position: tok.Position, Name: tok.Name}
 	}
 
-	p.pushAndEnter(&TryElement{Position: tok.Position, Attr: tok.Attr})
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.pushScope(&TryElement{Position: tok.Position, Attr: tok.Attr})
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseTryElementEnd() error {
+func (p *Parser) parseTryElementEnd() (Node, error) {
 	tok, err := p.mustNextEndElement("try")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parent, _ := p.currentParent().(*TryElement)
-	parent.Position.End = tok.Position.End
+	children := p.exitScope()
 
-	nodes := p.exit()
+	el := p.current().(*TryElement)
+	el.Position.End = tok.Position.End
 
-	for _, node := range nodes {
+	for _, node := range children {
 		switch v := node.(type) {
 		case *AttemptElement:
-			if parent.Attempt != nil {
-				return &DuplicateElementError{Position: v.Position, Name: v.Name()}
+			if el.Attempt != nil {
+				return nil, &DuplicateElementError{Position: v.Position, Name: v.Name()}
 			}
-			parent.Attempt = v
+			el.Attempt = v
 		case *ExceptElement:
-			if parent.Except != nil {
-				return &DuplicateElementError{Position: v.Position, Name: v.Name()}
+			if el.Except != nil {
+				return nil, &DuplicateElementError{Position: v.Position, Name: v.Name()}
 			}
-			parent.Except = v
+			el.Except = v
 		default:
 			// ignore other data, as per spec
 		}
 	}
 
-	if parent.Attempt == nil {
-		return &MissingElementError{Position: tok.Position, Name: esixml.Name{Space: "esi", Local: "attempt"}}
+	if el.Attempt == nil {
+		return nil, &MissingElementError{Position: tok.Position, Name: esixml.Name{Space: "esi", Local: "attempt"}}
 	}
 
-	if parent.Except == nil {
-		return &MissingElementError{Position: tok.Position, Name: esixml.Name{Space: "esi", Local: "except"}}
+	if el.Except == nil {
+		return nil, &MissingElementError{Position: tok.Position, Name: esixml.Name{Space: "esi", Local: "except"}}
 	}
 
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.stateFn = (*Parser).parseDataOrElement
+	return p.popIfRoot(), nil
 }
 
-func (p *parser) parseVarsElement() error {
+func (p *Parser) parseVarsElement() (Node, error) {
 	tok, err := p.mustNextStartElement("vars")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if tok.Closed {
-		return &EmptyElementError{Position: tok.Position, Name: tok.Name}
+		return nil, &EmptyElementError{Position: tok.Position, Name: tok.Name}
 	}
 
 	e := &VarsElement{Position: tok.Position, Attr: tok.Attr}
 
-	p.pushAndEnter(e)
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.pushScope(e)
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseVarsElementEnd() error {
+func (p *Parser) parseVarsElementEnd() (Node, error) {
 	tok, err := p.mustNextEndElement("vars")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parent, _ := p.currentParent().(*VarsElement)
-	parent.Position.End = tok.Position.End
-	parent.Nodes = p.exit()
+	children := p.exitScope()
 
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	el := p.current().(*VarsElement)
+	el.Nodes = children
+	el.Position.End = tok.Position.End
+
+	p.stateFn = (*Parser).parseDataOrElement
+	return p.popIfRoot(), nil
 }
 
-func (p *parser) parseWhenElement() error {
+func (p *Parser) parseWhenElement() (Node, error) {
 	tok, err := p.mustNextStartElement("when")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if _, ok := p.currentParent().(*ChooseElement); !ok {
-		return &UnexpectedElementError{Position: tok.Position, Name: tok.Name}
+	if _, ok := p.currentScope().(*ChooseElement); !ok {
+		return nil, &UnexpectedElementError{Position: tok.Position, Name: tok.Name}
 	}
 
 	test, ok := takeAttr(&tok.Attr, "test")
 	if !ok {
-		return &MissingAttributeError{Position: tok.Position, Element: tok.Name, Attribute: esixml.Name{Local: "test"}}
+		return nil, &MissingAttributeError{Position: tok.Position, Element: tok.Name, Attribute: esixml.Name{Local: "test"}}
 	}
 
-	p.pushAndEnter(&WhenElement{Position: tok.Position, Attr: tok.Attr, Test: test.Value})
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
+	p.pushScope(&WhenElement{Position: tok.Position, Attr: tok.Attr, Test: test.Value})
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }
 
-func (p *parser) parseWhenElementEnd() error {
+func (p *Parser) parseWhenElementEnd() (Node, error) {
 	tok, err := p.mustNextEndElement("when")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	parent, _ := p.currentParent().(*WhenElement)
-	parent.Position.End = tok.Position.End
-	parent.Nodes = p.exit()
+	children := p.exitScope()
 
-	p.stateFn = (*parser).parseDataOrElement
-	return nil
-}
+	el := p.current().(*WhenElement)
+	el.Nodes = children
+	el.Position.End = tok.Position.End
 
-func (p *parser) reset(data []byte) {
-	if len(p.nodes) == 0 || cap(p.nodes) > 4 {
-		p.nodes = make([][]Node, 1, 4)
-	} else {
-		clear(p.nodes)
-	}
-
-	p.data = data
-	p.nodes = p.nodes[:1]
-	p.unreadToken = esixml.Token{}
-	p.stateFn = (*parser).parseDataOrElement
-	p.reader.Reset(data)
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
 }

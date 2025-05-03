@@ -305,8 +305,7 @@ func TestParse(t *testing.T) {
 								attr(71, 85, "attr3", "value3"),
 								attr(86, 100, "attr4", "value4"),
 							},
-							Test:  "cond1",
-							Nodes: []esi.Node{},
+							Test: "cond1",
 						},
 					},
 					Otherwise: &esi.OtherwiseElement{
@@ -315,7 +314,6 @@ func TestParse(t *testing.T) {
 							attr(133, 147, "attr5", "value5"),
 							attr(148, 162, "attr6", "value6"),
 						},
-						Nodes: []esi.Node{},
 					},
 				},
 			},
@@ -511,30 +509,34 @@ func TestParse(t *testing.T) {
 		},
 		{
 			Name:  "inline with fetchable=no",
-			Input: `<esi:inline name="/extra" fetchable="no">extra <esi:choose> content</esi:inline>`,
+			Input: `<esi:inline name="/extra" fetchable="no">extra content</esi:inline>`,
 			Nodes: []esi.Node{
 				&esi.InlineElement{
-					Position:     position(0, 80),
+					Position:     position(0, 67),
 					FragmentName: "/extra",
 					Fetchable:    false,
-					Data: esi.RawData{
-						Position: position(41, 67),
-						Bytes:    []byte("extra <esi:choose> content"),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(41, 54),
+							Bytes:    []byte("extra content"),
+						},
 					},
 				},
 			},
 		},
 		{
 			Name:  "inline with fetchable=yes",
-			Input: `<esi:inline name="/extra" fetchable="yes">extra <esi:choose> content</esi:inline>`,
+			Input: `<esi:inline name="/extra" fetchable="yes">extra content</esi:inline>`,
 			Nodes: []esi.Node{
 				&esi.InlineElement{
-					Position:     position(0, 81),
+					Position:     position(0, 68),
 					FragmentName: "/extra",
 					Fetchable:    true,
-					Data: esi.RawData{
-						Position: position(42, 68),
-						Bytes:    []byte("extra <esi:choose> content"),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(42, 55),
+							Bytes:    []byte("extra content"),
+						},
 					},
 				},
 			},
@@ -591,12 +593,10 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "inline with unmatched end-element",
 			Input: `<esi:inline name="/extra" fetchable="yes">something</esi:when>`,
-			Error: &esi.UnclosedElementError{
-				Position: esi.Position{
-					Start: 0,
-					End:   42,
-				},
-				Name: nsname("inline"),
+			Error: &esi.UnexpectedEndElementError{
+				Position: position(51, 62),
+				Name:     nsname("when"),
+				Expected: nsname("inline"),
 			},
 		},
 		{
@@ -622,10 +622,6 @@ func TestParse(t *testing.T) {
 					},
 					FragmentName: "/test",
 					Fetchable:    true,
-					Data: esi.RawData{
-						Position: position(71, 71),
-						Bytes:    []byte{},
-					},
 				},
 			},
 		},
@@ -646,9 +642,9 @@ func TestParse(t *testing.T) {
 			Nodes: []esi.Node{
 				&esi.RemoveElement{
 					Position: position(0, 69),
-					Data: esi.RawData{
-						Position: position(12, 56),
-						Bytes:    []byte(`something <esi:comment text="some comment"/>`),
+					Nodes: []esi.Node{
+						&esi.RawData{Position: position(12, 22), Bytes: []uint8("something ")},
+						&esi.CommentElement{Position: position(22, 56), Text: "some comment"},
 					},
 				},
 			},
@@ -686,12 +682,10 @@ func TestParse(t *testing.T) {
 		{
 			Name:  "remove with unmatched end-element",
 			Input: `<esi:remove>something</esi:when>`,
-			Error: &esi.UnclosedElementError{
-				Position: esi.Position{
-					Start: 0,
-					End:   12,
-				},
-				Name: nsname("remove"),
+			Error: &esi.UnexpectedEndElementError{
+				Position: position(21, 32),
+				Name:     nsname("when"),
+				Expected: nsname("remove"),
 			},
 		},
 		{
@@ -703,10 +697,6 @@ func TestParse(t *testing.T) {
 					Attr: []esixml.Attr{
 						attr(12, 26, "attr1", "value1"),
 						attr(27, 41, "attr2", "value2"),
-					},
-					Data: esi.RawData{
-						Position: position(42, 42),
-						Bytes:    []byte{},
 					},
 				},
 			},
@@ -910,14 +900,12 @@ func TestParse(t *testing.T) {
 						Attr: []esixml.Attr{
 							attr(58, 72, "attr3", "value3"),
 						},
-						Nodes: []esi.Node{},
 					},
 					Except: &esi.ExceptElement{
 						Position: position(93, 133),
 						Attr: []esixml.Attr{
 							attr(105, 119, "attr4", "value4"),
 						},
-						Nodes: []esi.Node{},
 					},
 				},
 			},
@@ -996,7 +984,6 @@ func TestParse(t *testing.T) {
 						attr(10, 24, "attr1", "value1"),
 						attr(25, 39, "attr2", "value2"),
 					},
-					Nodes: []esi.Node{},
 				},
 			},
 		},
@@ -1009,6 +996,14 @@ func TestParse(t *testing.T) {
 					End:   23,
 				},
 				Name: nsname("when"),
+			},
+		},
+		{
+			Name:  "doubly closed element",
+			Input: `<esi:remove></esi:remove></esi:remove>`,
+			Error: &esi.UnexpectedEndElementError{
+				Position: position(25, 38),
+				Name:     nsname("remove"),
 			},
 		},
 		{
@@ -1046,7 +1041,7 @@ func TestParse(t *testing.T) {
 		<esi:include src="https://www.example.com/ad1.html"/> 
 	</esi:attempt>
 	<esi:except> 
-		<esi:comment text="Just writef some HTML instead"/> 
+		<esi:comment text="Just write some HTML instead!"/> 
 		<a href=www.akamai.com>www.example.com</a>
 	</esi:except> 
 </esi:try>
@@ -1092,9 +1087,11 @@ func TestParse(t *testing.T) {
 					Position:     position(156, 258),
 					FragmentName: "URI",
 					Fetchable:    true,
-					Data: esi.RawData{
-						Position: position(195, 245),
-						Bytes:    []byte(" \n\tfragment to be stored within an ESI processor \n"),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(195, 245),
+							Bytes:    []byte(" \n\tfragment to be stored within an ESI processor \n"),
+						},
 					},
 				},
 				&esi.RawData{
@@ -1199,7 +1196,7 @@ func TestParse(t *testing.T) {
 							},
 							&esi.CommentElement{
 								Position: position(851, 902),
-								Text:     "Just writef some HTML instead",
+								Text:     "Just write some HTML instead!",
 							},
 							&esi.RawData{
 								Position: position(902, 950),
@@ -1222,9 +1219,11 @@ func TestParse(t *testing.T) {
 				},
 				&esi.RemoveElement{
 					Position: position(1100, 1182),
-					Data: esi.RawData{
-						Position: position(1112, 1169),
-						Bytes:    []byte(" \n\t<a href=\"https://www.example.com\">www.example.com</a>\n"),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(1112, 1169),
+							Bytes:    []byte(" \n\t<a href=\"https://www.example.com\">www.example.com</a>\n"),
+						},
 					},
 				},
 				&esi.RawData{
@@ -1258,21 +1257,37 @@ func TestParse(t *testing.T) {
 		t.Run(testCase.Name, func(t *testing.T) {
 			input := strings.TrimSpace(testCase.Input)
 
-			nodes, err := esi.Parse([]byte(input))
+			parser := esi.NewParser(strings.NewReader(input))
 
-			if diff := cmp.Diff(testCase.Nodes, nodes); diff != "" {
-				t.Errorf("Parse(...): (-want +got):\n%s", diff)
+			var gotNodes []esi.Node
+			var gotErr error
+
+			for node, err := range parser.All {
+				if err != nil {
+					gotErr = err
+					break
+				}
+
+				gotNodes = append(gotNodes, node)
 			}
 
-			if !errors.Is(testCase.Error, err) {
-				t.Errorf("got error %v, want %v", err, testCase.Error)
+			if !errors.Is(testCase.Error, gotErr) {
+				t.Errorf("got error %v, want %v", gotErr, testCase.Error)
+			}
+
+			if testCase.Error != nil {
+				return
+			}
+
+			if diff := cmp.Diff(testCase.Nodes, gotNodes); diff != "" {
+				t.Errorf("Parse(...): (-want +got):\n%s", diff)
 			}
 		})
 	}
 }
 
 func BenchmarkParse(b *testing.B) {
-	input := []byte(strings.TrimSpace(`
+	input := strings.TrimSpace(`
 <header>Header</header>
 
 <esi:include src="https://example.com/1.html" alt="https://bak.example.com/2.html" onerror="continue"/>
@@ -1305,7 +1320,7 @@ func BenchmarkParse(b *testing.B) {
 		<esi:include src="https://www.example.com/ad1.html"/> 
 	</esi:attempt>
 	<esi:except> 
-		<esi:comment text="Just writef some HTML instead"/> 
+		<esi:comment text="Just write some HTML instead!"/> 
 		<a href=www.akamai.com>www.example.com</a>
 	</esi:except> 
 </esi:try>
@@ -1330,14 +1345,23 @@ func BenchmarkParse(b *testing.B) {
 
 <name:spaced-element></name:spaced-element>
 
-<footer>Footer</footer>`))
+<footer>Footer</footer>`)
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(input)))
 
+	sr := strings.NewReader(input)
+
+	var p esi.Parser
+
 	for b.Loop() {
-		if _, err := esi.Parse(input); err != nil {
-			b.Fatal(err)
+		sr.Reset(input)
+		p.Reset(sr)
+
+		for _, err := range p.All {
+			if err != nil {
+				b.Fatal(err)
+			}
 		}
 	}
 }

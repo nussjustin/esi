@@ -2,6 +2,7 @@
 package esixml
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -69,7 +70,7 @@ func bytesToString(b []byte) string {
 // DuplicateAttributeError is returned when encountering an ESI element with duplicate attributes.
 type DuplicateAttributeError struct {
 	// Offset is the position in the input where the error occurred.
-	Offset int
+	At int
 
 	// Name is the name of the duplicated attributes.
 	Name string
@@ -77,7 +78,7 @@ type DuplicateAttributeError struct {
 
 // Error returns a human-readable error message.
 func (d *DuplicateAttributeError) Error() string {
-	return fmt.Sprintf("duplicate attribute %q at offset %d", d.Name, d.Offset)
+	return fmt.Sprintf("duplicate attribute %q at offset %d", d.Name, d.At)
 }
 
 // Is checks if the given error matches the receiver.
@@ -86,10 +87,37 @@ func (d *DuplicateAttributeError) Is(err error) bool {
 	return errors.As(err, &o) && *o == *d
 }
 
+// Offset returns d.At.
+func (d *DuplicateAttributeError) Offset() int {
+	return d.At
+}
+
+// InvalidNameError is returned when an invalid XML element, entity or attribute name is encountered.
+type InvalidNameError struct {
+	// Offset is the position in the input where the error occurred.
+	At int
+}
+
+// Error returns a human-readable error message.
+func (i *InvalidNameError) Error() string {
+	return fmt.Sprintf("invalid name at offset %d", i.At)
+}
+
+// Is checks if the given error matches the receiver.
+func (i *InvalidNameError) Is(err error) bool {
+	var o *InvalidNameError
+	return errors.As(err, &o) && *o == *i
+}
+
+// Offset returns i.At.
+func (i *InvalidNameError) Offset() int {
+	return i.At
+}
+
 // SyntaxError is returned when encountering invalid XML when processing ESI elements.
 type SyntaxError struct {
 	// Offset is the position in the input where the error occurred.
-	Offset int
+	At int
 
 	// Message may contain a custom message that describes the error
 	Message string
@@ -100,22 +128,88 @@ type SyntaxError struct {
 
 // Error returns a human-readable error message.
 func (s *SyntaxError) Error() string {
-	if s.Message == "" {
-		return fmt.Sprintf("invalid syntax at offset %d", s.Offset)
+	switch {
+	case s.Message != "" && s.Underlying != nil:
+		return fmt.Sprintf("invalid syntax at offset %d: %s (%s)", s.At, s.Message, s.Underlying)
+	case s.Message != "":
+		return fmt.Sprintf("invalid syntax at offset %d: %s", s.At, s.Message)
+	case s.Underlying != nil:
+		return fmt.Sprintf("invalid syntax at offset %d (%s)", s.At, s.Underlying)
+	default:
+		return fmt.Sprintf("invalid syntax at offset %d", s.At)
 	}
-
-	return fmt.Sprintf("invalid syntax at offset %d: %s", s.Offset, s.Message)
 }
 
 // Is checks if the given error matches the receiver.
 func (s *SyntaxError) Is(err error) bool {
 	var o *SyntaxError
-	return errors.As(err, &o) && o.Offset == s.Offset && o.Message == s.Message
+	return errors.As(err, &o) && o.At == s.At && o.Message == s.Message
+}
+
+// Offset returns s.At.
+func (s *SyntaxError) Offset() int {
+	return s.At
 }
 
 // Unwrap returns e.Underlying.
 func (s *SyntaxError) Unwrap() error {
 	return s.Underlying
+}
+
+// UnexpectedCharacterError is returned by [Scanner.ConsumeOrError] when the next character does not match the expected.
+type UnexpectedCharacterError struct {
+	// At is the position at which the error occurred.
+	At int
+
+	// Got is the character that was read.
+	Got byte
+
+	// Expected contains the expected character.
+	Expected byte
+}
+
+// Error returns a human-readable error message.
+func (u *UnexpectedCharacterError) Error() string {
+	return fmt.Sprintf("unexpected character '%c' at offset %d, '%c' expected", u.Got, u.At, u.Expected)
+}
+
+// Is returns true if the given error is the same as the receiver.
+func (u *UnexpectedCharacterError) Is(err error) bool {
+	var o *UnexpectedCharacterError
+	return errors.As(err, &o) && *o == *u
+}
+
+// Offset returns u.At.
+func (u *UnexpectedCharacterError) Offset() int {
+	return u.At
+}
+
+// UnexpectedEndOfInput is returned by [Scanner.ConsumeOrError] when there is no character to read.
+type UnexpectedEndOfInput struct {
+	// At is the position at which the error occurred.
+	At int
+
+	// Expected contains the expected character.
+	Expected byte
+}
+
+// Error returns a human-readable error message.
+func (u *UnexpectedEndOfInput) Error() string {
+	if u.Expected == 0 {
+		return fmt.Sprintf("unexpected end of input at offset %d", u.At)
+	}
+	return fmt.Sprintf("unexpected end of input at offset %d, character %c expected", u.At, u.Expected)
+}
+
+// Is returns true if the given error is the same as the receiver.
+func (u *UnexpectedEndOfInput) Is(err error) bool {
+	var o *UnexpectedEndOfInput
+	return errors.As(err, &o) && *o == *u
+}
+
+// Offset returns u.At.
+func (u *UnexpectedEndOfInput) Offset() int {
+	return u.At
 }
 
 // UnsupportedEntityError is returned when encountering a non-standard named entity inside an attribute.
@@ -252,24 +346,26 @@ func (t TokenType) String() string {
 //
 // It only looks for opening and closing ESI tags and simply returns all other data unprocessed.
 type Reader struct {
-	data    []byte
-	offset  int
-	err     error
-	scratch [32]byte
+	br     bufio.Reader
+	offset int
+	err    error
+
+	attrBuf [32]byte
+	nameBuf [32]byte
 
 	stateFn func(*Reader) (Token, error)
 }
 
-// NewReader returns a new Reader set to use the given input.
+// NewReader returns a new Reader set to read from in.
 //
-// This is the same as calling [Reader.Reset] on an existing reader.
-func NewReader(data []byte) *Reader {
+// This is a shorthand for creating a new [Reader] and calling [Reader.Reset] on it.
+func NewReader(in io.Reader) *Reader {
 	r := &Reader{}
-	r.Reset(data)
+	r.Reset(in)
 	return r
 }
 
-// All returns all remaining tokens from the reader.
+// All yields all remaining tokens from the reader.
 func (r *Reader) All(yield func(Token, error) bool) {
 	for {
 		t, err := r.Next()
@@ -288,80 +384,132 @@ func (r *Reader) All(yield func(Token, error) bool) {
 	}
 }
 
-// Offset returns the byte offset in the []byte from which data is read.
-func (r *Reader) Offset() int {
-	return r.offset
-}
-
 // Next returns the next token if any.
 //
 // If an error occurred, future calls will return the same error.
 //
 // After all data was read, if there were no previous errors, Next will return [io.EOF].
 func (r *Reader) Next() (Token, error) {
+	var token Token
+
 	for {
 		if r.err != nil {
 			return Token{}, r.err
 		}
 
-		token, err := r.stateFn(r)
-		if err != nil {
-			r.err = err
-			return Token{}, err
-		}
+		token, r.err = r.stateFn(r)
 
-		// Ignore empty data tokens. This makes the parsing logic simpler
-		if token.Type == TokenTypeData && len(token.Data) == 0 {
-			continue
+		if token.Type != TokenTypeInvalid {
+			return token, nil
 		}
-
-		return token, nil
 	}
 }
 
-// Reset resets the Reader to read from the given []byte.
+// Reset resets the Reader to read from in.
 //
-// This allows re-using the reader and can also be used to initialize a reader without using [NewReader].
-func (r *Reader) Reset(data []byte) {
-	clear(r.scratch[:])
+// This allows re-using the reader for different inputs.
+func (r *Reader) Reset(in io.Reader) {
+	clear(r.nameBuf[:])
+	clear(r.attrBuf[:])
 
-	r.data = data
+	r.br.Reset(in)
 	r.offset = 0
 	r.err = nil
 	r.stateFn = (*Reader).parseElementOrData
 }
 
 func (r *Reader) consume(b byte) bool {
-	if r.offset >= len(r.data) || r.data[r.offset] != b {
+	b1, err := r.br.ReadByte()
+	if err != nil {
 		return false
 	}
+
+	if b1 != b {
+		_ = r.br.UnreadByte()
+		return false
+	}
+
 	r.offset++
 	return true
 }
 
+func (r *Reader) consumeOrError(b byte) error {
+	b1, err := r.br.ReadByte()
+	if err != nil {
+		if !errors.Is(err, io.EOF) {
+			return err
+		}
+
+		return &UnexpectedEndOfInput{
+			At:       r.offset,
+			Expected: b,
+		}
+	}
+
+	if b1 != b {
+		_ = r.br.UnreadByte()
+
+		return &UnexpectedCharacterError{
+			At:       r.offset,
+			Got:      b1,
+			Expected: b,
+		}
+	}
+
+	r.offset++
+	return nil
+}
+
 func (r *Reader) discardSpaces() {
-	for r.offset < len(r.data) {
-		switch r.data[r.offset] {
+	for {
+		c, err := r.br.ReadByte()
+		if err != nil {
+			return
+		}
+
+		switch c {
 		case ' ', '\r', '\n', '\t':
 			r.offset++
 		default:
+			_ = r.br.UnreadByte()
 			return
 		}
 	}
 }
 
-func (r *Reader) peek() byte {
-	if r.offset >= len(r.data) {
-		return 0
+func (r *Reader) peek() (byte, bool) {
+	b, _ := r.br.Peek(1)
+	if len(b) == 0 {
+		return 0, false
 	}
-	return r.data[r.offset]
+	return b[0], true
+}
+
+func (r *Reader) readByte() (byte, error) {
+	b, err := r.br.ReadByte()
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			err = &UnexpectedEndOfInput{At: r.offset}
+		}
+		return 0, err
+	}
+	r.offset++
+	return b, nil
+}
+
+func (r *Reader) unreadByte() {
+	_ = r.br.UnreadByte()
+	r.offset--
 }
 
 func (r *Reader) parseEndElement() (Token, error) {
-	t := Token{Type: TokenTypeEndElement, Position: Position{Start: r.offset}}
+	// We already consumed the '<', so we must subtract it from the offset
+	t := Token{Type: TokenTypeEndElement, Position: Position{Start: r.offset - 1}}
 
-	_ = r.consume('<')
-	_ = r.consume('/')
+	// An error here should be impossible, but we check just in case
+	if err := r.consumeOrError('/'); err != nil {
+		return Token{}, err
+	}
 
 	var err error
 
@@ -371,8 +519,8 @@ func (r *Reader) parseEndElement() (Token, error) {
 
 	r.discardSpaces()
 
-	if !r.consume('>') {
-		return Token{}, &SyntaxError{Offset: r.offset, Message: "expected '>'"}
+	if err := r.consumeOrError('>'); err != nil {
+		return Token{}, err
 	}
 
 	t.Position.End = r.offset
@@ -382,50 +530,74 @@ func (r *Reader) parseEndElement() (Token, error) {
 }
 
 func (r *Reader) parseElementOrData() (Token, error) {
-	offset := r.offset
+	var data []byte
 
 	for {
-		index := bytes.IndexByte(r.data[offset:], '<')
-		if index == -1 {
-			// We reached the end of the data with no element, so take the rest as unprocessed data. If there is none,
-			t := Token{Type: TokenTypeData, Position: Position{Start: r.offset, End: len(r.data)}, Data: r.data[r.offset:]}
+		buf, err := r.br.ReadSlice('<')
 
-			r.offset = len(r.data)
-			r.err = io.EOF
-
-			return t, nil
-		}
-
-		offset += index
+		// ReadSlice can return data even if there was an error, so we must append it either way
+		data = append(data, buf...)
 
 		switch {
-		case bytes.HasPrefix(r.data[offset:], []byte("<esi:")):
-			// If this is empty, it will be ignored
-			t := Token{Type: TokenTypeData, Position: Position{Start: r.offset, End: offset}, Data: r.data[r.offset:offset]}
+		case err == bufio.ErrBufferFull: //nolint:errorlint
+			continue
+		case err == io.EOF: //nolint:errorlint
+			r.offset += len(data)
+			r.err = io.EOF
 
-			r.offset = offset
-			r.stateFn = (*Reader).parseStartElement
+			if len(data) == 0 {
+				return Token{}, err
+			}
 
-			return t, nil
-		case bytes.HasPrefix(r.data[offset:], []byte("</esi:")):
-			// If this is empty, it will be ignored
-			t := Token{Type: TokenTypeData, Position: Position{Start: r.offset, End: offset}, Data: r.data[r.offset:offset]}
-
-			r.offset = offset
-			r.stateFn = (*Reader).parseEndElement
-
-			return t, nil
-		default:
-			// Not an esi tag, so just continue from after the "<"
-			offset++
+			return Token{
+				Type: TokenTypeData,
+				Position: Position{
+					Start: r.offset - len(data),
+					End:   r.offset,
+				},
+				Data: data,
+			}, err
+		case err != nil:
+			return Token{}, err
 		}
+
+		next, _ := r.br.Peek(5)
+
+		var nextStateFn func(*Reader) (Token, error)
+
+		switch {
+		case bytes.HasPrefix(next, []byte("esi:")):
+			nextStateFn = (*Reader).parseStartElement
+		case bytes.HasPrefix(next, []byte("/esi:")):
+			nextStateFn = (*Reader).parseEndElement
+		default:
+			continue
+		}
+
+		r.offset += len(data)
+		r.stateFn = nextStateFn
+
+		// data includes the '<' so we must account for it in our check
+		if len(data) <= 1 {
+			return Token{}, nil
+		}
+
+		return Token{
+			Type: TokenTypeData,
+			Position: Position{
+				Start: r.offset - len(data),
+				// Do not counter the '<'.
+				End: r.offset - 1,
+			},
+			// Remove the '<' from the data, which will be parsed as part of the ESI start or end element.
+			Data: data[:len(data)-1],
+		}, nil
 	}
 }
 
 func (r *Reader) parseStartElement() (Token, error) {
-	t := Token{Type: TokenTypeStartElement, Position: Position{Start: r.offset}}
-
-	_ = r.consume('<')
+	// We already consumed the '<', so we must subtract it from the offset
+	t := Token{Type: TokenTypeStartElement, Position: Position{Start: r.offset - 1}}
 
 	var err error
 
@@ -439,9 +611,8 @@ func (r *Reader) parseStartElement() (Token, error) {
 		if r.consume('/') {
 			t.Closed = true
 
-			if !r.consume('>') {
-				r.err = &SyntaxError{Offset: r.offset, Message: "expected '>'"}
-				return Token{}, r.err
+			if err := r.consumeOrError('>'); err != nil {
+				return Token{}, err
 			}
 
 			break
@@ -460,14 +631,8 @@ func (r *Reader) parseStartElement() (Token, error) {
 
 		r.discardSpaces()
 
-		b, err := r.readByte()
-		if err != nil {
+		if err := r.consumeOrError('='); err != nil {
 			return Token{}, err
-		}
-
-		if b != '=' {
-			r.offset--
-			return Token{}, &SyntaxError{Offset: r.offset, Message: "expected '='"}
 		}
 
 		attrValue, err := r.readAttrValue()
@@ -480,7 +645,7 @@ func (r *Reader) parseStartElement() (Token, error) {
 		}
 
 		if t.hasAttr(attrName) {
-			return Token{}, &DuplicateAttributeError{Offset: offset, Name: attrName.Local}
+			return Token{}, &DuplicateAttributeError{At: offset, Name: attrName.Local}
 		}
 
 		t.Attr = append(t.Attr, Attr{
@@ -843,20 +1008,12 @@ func isName(s []byte) bool {
 	return true
 }
 
-func (r *Reader) readByte() (byte, error) {
-	if r.offset >= len(r.data) {
-		return 0, &SyntaxError{Offset: r.offset, Message: "unexpected EOF", Underlying: io.ErrUnexpectedEOF}
-	}
-	r.offset++
-	return r.data[r.offset-1], nil
-}
-
 func (r *Reader) readAttrValue() (string, error) {
-	if b := r.peek(); b == '"' || b == '\'' {
+	if b, _ := r.peek(); b == '"' || b == '\'' {
 		return r.readQuotedAttrValue()
 	}
 
-	offset := r.offset
+	buf := r.attrBuf[:0]
 
 	for {
 		b, err := r.readByte()
@@ -867,12 +1024,13 @@ func (r *Reader) readAttrValue() (string, error) {
 		// https://www.w3.org/TR/REC-html40/intro/sgmltut.html#h-3.2.2
 		if 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' ||
 			'0' <= b && b <= '9' || b == '_' || b == ':' || b == '-' {
+			buf = append(buf, b)
 			continue
 		}
 
-		r.offset--
+		r.unreadByte()
 
-		return bytesToString(r.data[offset:r.offset]), nil
+		return bytesToString(buf), nil
 	}
 }
 
@@ -889,7 +1047,7 @@ func (r *Reader) readQuotedAttrValue() (string, error) {
 	// no need to check the error
 	quote, _ := r.readByte()
 
-	buf := r.scratch[:0]
+	buf := r.attrBuf[:0]
 
 	for {
 		b, err := r.readByte()
@@ -901,8 +1059,7 @@ func (r *Reader) readQuotedAttrValue() (string, error) {
 		case quote:
 			return bytesToString(buf), nil
 		case '<':
-			r.offset--
-			return "", &SyntaxError{Offset: r.offset, Message: "unescaped < inside quoted string"}
+			return "", &SyntaxError{At: r.offset - 1, Message: "unescaped < inside quoted string"}
 		case '\r':
 			// \r and \r\n must be converted to \n, so we simply treat \r as \n and consume the next \n if any
 			_ = r.consume('\n')
@@ -938,13 +1095,19 @@ func (r *Reader) readQuotedAttrValue() (string, error) {
 					}
 				}
 
-				if b != ';' {
-					return "", &SyntaxError{Offset: r.offset, Message: "expected ';'"}
+				r.unreadByte()
+
+				if len(escBuf) == 0 {
+					return "", &UnexpectedCharacterError{At: r.offset, Got: b}
+				}
+
+				if err := r.consumeOrError(';'); err != nil {
+					return "", err
 				}
 
 				n, err := strconv.ParseUint(string(escBuf), base, 64)
 				if err != nil || n > unicode.MaxRune {
-					return "", &SyntaxError{Offset: r.offset - len(escBuf), Message: "invalid number in escape sequence"}
+					return "", &SyntaxError{At: r.offset - len(escBuf), Message: "invalid number in escape sequence"}
 				}
 
 				buf = append(buf, string(rune(n))...)
@@ -956,13 +1119,8 @@ func (r *Reader) readQuotedAttrValue() (string, error) {
 					return "", err
 				}
 
-				b, err = r.readByte()
-				if err != nil {
+				if err := r.consumeOrError(';'); err != nil {
 					return "", err
-				}
-
-				if b != ';' {
-					return "", &SyntaxError{Offset: r.offset, Message: "expected ';'"}
 				}
 
 				e, ok := entity[name.Local]
@@ -987,32 +1145,32 @@ func (r *Reader) readName(local bool) (Name, error) {
 	}
 
 	if b < utf8.RuneSelf && !isNameByte(b) {
-		r.offset--
-		return Name{}, &SyntaxError{Offset: r.offset, Message: "invalid name character"}
+		return Name{}, &InvalidNameError{At: offset}
 	}
 
-	for i := r.offset; i < len(r.data); i++ {
-		b, err := r.readByte()
-		if err != nil {
-			return Name{}, err
+	name := append(r.nameBuf[:0], b)
+
+	for {
+		b, ok := r.peek()
+		if !ok {
+			break
 		}
 
 		if b < utf8.RuneSelf && !isNameByte(b) {
-			r.offset--
 			break
 		}
+
+		_, _ = r.readByte()
+
+		name = append(name, b)
 	}
 
-	name := r.data[offset:r.offset]
-
 	if !isName(name) {
-		r.offset = offset
-		return Name{}, &SyntaxError{Offset: r.offset, Message: "invalid name"}
+		return Name{}, &InvalidNameError{At: offset}
 	}
 
 	if local && bytes.IndexByte(name, ':') != -1 {
-		r.offset = offset
-		return Name{}, &SyntaxError{Offset: r.offset, Message: "name without namespace expected"}
+		return Name{}, &SyntaxError{At: offset, Message: "name without namespace expected"}
 	}
 
 	return bytesToName(name), nil
