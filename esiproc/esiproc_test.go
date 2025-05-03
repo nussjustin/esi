@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"iter"
 	"net/url"
 	"strings"
 	"testing"
@@ -44,17 +46,14 @@ func (t testEnv) Interpolate(_ context.Context, s string) (string, error) {
 	return s, nil
 }
 
-func parseESI(input string) ([]esi.Node, error) {
-	nodes := make([]esi.Node, 0, 32)
-
-	for node, err := range esi.NewParser(strings.NewReader(input)).All {
-		if err != nil {
-			return nil, err
+func nodesToSeq(nodes []esi.Node) iter.Seq2[esi.Node, error] {
+	return func(yield func(esi.Node, error) bool) {
+		for _, node := range nodes {
+			if !yield(node, nil) {
+				return
+			}
 		}
-		nodes = append(nodes, node)
 	}
-
-	return nodes, nil
 }
 
 func TestProcessor(t *testing.T) {
@@ -134,7 +133,7 @@ func TestProcessor(t *testing.T) {
 				</esi:choose>
 			`,
 			Error: &esiproc.UnsupportedElementError{
-				Element: &esi.WhenElement{Position: esi.Position{Start: 23, End: 59}},
+				Element: &esi.ChooseElement{Position: esi.Position{Start: 5, End: 119}},
 			},
 		},
 		{
@@ -358,16 +357,6 @@ func TestProcessor(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
-			nodes := testCase.InputNodes
-
-			if nodes == nil {
-				var err error
-
-				if nodes, err = parseESI(testCase.Input); err != nil {
-					t.Fatalf("failed to parse test input: %s", err)
-				}
-			}
-
 			defaultOpts := []esiproc.ProcessorOpt{
 				esiproc.WithIncludeConcurrency(4),
 				esiproc.WithIncludeFunc(func(_ context.Context, urlStr string, meta map[string]string) ([]byte, error) {
@@ -395,11 +384,18 @@ func TestProcessor(t *testing.T) {
 			}
 
 			p := esiproc.New(append(defaultOpts, testCase.Opts...)...)
-			defer p.Release()
+
+			var nodes iter.Seq2[esi.Node, error]
+
+			if testCase.InputNodes != nil {
+				nodes = nodesToSeq(testCase.InputNodes)
+			} else {
+				nodes = esi.NewParser(strings.NewReader(testCase.Input)).All
+			}
 
 			var buf bytes.Buffer
 
-			if err := p.Process(t.Context(), &buf, nodes); !errors.Is(err, testCase.Error) {
+			if _, err := p.Process(t.Context(), &buf, nodes); !errors.Is(err, testCase.Error) {
 				t.Errorf("got error %v, want %v", err, testCase.Error)
 			}
 
@@ -412,4 +408,46 @@ func TestProcessor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func BenchmarkProcessor(b *testing.B) {
+	b.Run("Multiple includes", func(b *testing.B) {
+		const input = `
+			before request1 / <esi:include src="/request1"/> / after request1
+			before request2 / <esi:include src="/request2"/> / after request2
+			before request3 / <esi:include src="/request3"/> / after request3
+			before request4 / <esi:include src="/request4"/> / after request4
+			before request5 / <esi:include src="/request5"/> / after request5
+			before request6 / <esi:include src="/request6"/> / after request6
+			before request7 / <esi:include src="/request7"/> / after request7
+			before request8 / <esi:include src="/request8"/> / after request8
+			before request9 / <esi:include src="/request9"/> / after request9
+			before request10 / <esi:include src="/request10"/> / after request10
+		`
+
+		var nodes []esi.Node
+
+		for node, err := range esi.NewParser(strings.NewReader(input)).All {
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			nodes = append(nodes, node)
+		}
+
+		p := esiproc.New(
+			esiproc.WithIncludeConcurrency(4),
+			esiproc.WithIncludeFunc(func(_ context.Context, urlStr string, _ map[string]string) ([]byte, error) {
+				return []byte(urlStr), nil
+			}))
+
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for b.Loop() {
+			if _, err := p.Process(b.Context(), io.Discard, nodesToSeq(nodes)); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

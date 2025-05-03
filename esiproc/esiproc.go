@@ -2,12 +2,11 @@
 package esiproc
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"sync"
+	"iter"
 
 	"github.com/nussjustin/esi"
 	"github.com/nussjustin/esi/esiexpr/ast"
@@ -153,24 +152,34 @@ func WithIncludeFunc(f IncludeFunc) ProcessorOpt {
 //
 // Processor is safe for concurrent use.
 type Processor struct {
-	opts processorOptions
-
-	ctx    context.Context //nolint:containedctx
-	cancel context.CancelFunc
-
-	wg       sync.WaitGroup
-	incQueue queue[*include]
+	opts    processorOptions
+	incSema chan struct{}
 }
 
 type include struct {
-	ctx context.Context //nolint:containedctx
-
-	inc *esi.IncludeElement
-
+	done chan struct{}
 	data []byte
 	err  error
+}
 
-	done chan struct{}
+type processedNode struct {
+	inc  *include
+	data []byte
+	err  error
+}
+
+func (p *processedNode) wait(ctx context.Context) ([]byte, error) {
+	if p.err != nil || p.inc == nil {
+		return p.data, p.err
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.inc.done:
+	}
+
+	return p.inc.data, p.inc.err
 }
 
 // New creates a new Processor and applies the given options.
@@ -178,164 +187,176 @@ type include struct {
 // The default is equivalent to: New(WithIncludeConcurrency(1), WithIncludeFunc(nil), WithTestFunc(nil)).
 func New(opts ...ProcessorOpt) *Processor {
 	p := &Processor{}
-	p.incQueue.init()
 	p.opts.incConcurrency = 1
 
 	for _, opt := range opts {
 		opt(&p.opts)
 	}
 
-	p.ctx, p.cancel = context.WithCancel(context.Background())
-
-	// No need for any workers if we don't support fetching
-	if p.opts.incFunc == nil {
-		return p
-	}
-
-	for range p.opts.incConcurrency {
-		p.wg.Add(1)
-		go func() {
-			defer p.wg.Done()
-			p.handleIncludes()
-		}()
-	}
+	p.incSema = make(chan struct{}, p.opts.incConcurrency)
 
 	return p
 }
 
-// Process processes the given data and writes the result to dst.
+// Process processes the given data and writes the result to w.
 //
 // When encountering an unsupported element, [errors.ErrUnsupported] is returned.
 //
 // If Process is called after Release, an error is returned.
-func (p *Processor) Process(ctx context.Context, dst io.Writer, nodes []esi.Node) error {
-	if err := p.ctx.Err(); err != nil {
-		return err
-	}
-
+func (p *Processor) Process(ctx context.Context, w io.Writer, nodes iter.Seq2[esi.Node, error]) (int, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	return p.processNodes(ctx, dst, nodes)
-}
+	resC := make(chan processedNode, 32)
 
-// Release releases all resources associated with the Processor.
-//
-// If called multiple times, all but the first call will be no-ops.
-func (p *Processor) Release() {
-	p.cancel()
-	p.wg.Wait()
-}
+	go func() {
+		defer close(resC)
+		p.processNodesIter(ctx, resC, nodes)
+	}()
 
-func (p *Processor) processNode(
-	ctx context.Context,
-	dst io.Writer,
-	node esi.Node,
-	inc *include,
-) error {
-	switch v := node.(type) {
-	case *esi.AttemptElement:
-		return &UnexpectedElementError{Element: v}
-	case *esi.CommentElement:
-		return nil
-	case *esi.ChooseElement:
-		for _, w := range v.When {
-			if p.opts.env == nil {
-				return &UnsupportedElementError{Element: w}
+	var n int
+
+	for {
+		var res processedNode
+		var ok bool
+
+		select {
+		case <-ctx.Done():
+			return n, ctx.Err()
+		case res, ok = <-resC:
+			if !ok {
+				return n, nil
 			}
 
+			data, err := res.wait(ctx)
+			if err != nil {
+				return 0, err
+			}
+
+			n1, err := w.Write(data)
+			if err != nil {
+				return 0, err
+			}
+
+			n += n1
+		}
+	}
+}
+
+func (p *Processor) processNode(ctx context.Context, resC chan<- processedNode, node esi.Node) {
+	send := func(data []byte, inc *include, err error) {
+		select {
+		case <-ctx.Done():
+		case resC <- processedNode{inc: inc, data: data, err: err}:
+		}
+	}
+
+	switch v := node.(type) {
+	case *esi.AttemptElement:
+		send(nil, nil, &UnexpectedElementError{Element: v})
+	case *esi.CommentElement:
+	case *esi.ChooseElement:
+		if p.opts.env == nil {
+			send(nil, nil, &UnsupportedElementError{Element: v})
+			return
+		}
+
+		for _, w := range v.When {
 			result, err := p.opts.env.Eval(ctx, w.Test)
 			if err != nil {
-				return err
+				send(nil, nil, err)
+				return
 			}
 
 			resultBool, ok := result.(bool)
 			if !ok {
-				return &InvalidExpressionResultError{Element: w, Expr: w.Test, Result: result}
+				send(nil, nil, &InvalidExpressionResultError{Element: w, Expr: w.Test, Result: result})
+				return
 			}
 
 			if !resultBool {
 				continue
 			}
 
-			return p.processNodes(ctx, dst, w.Nodes)
+			p.processNodes(ctx, resC, w.Nodes)
+			return
 		}
 
 		if v.Otherwise == nil {
-			return nil
+			return
 		}
 
-		return p.processNodes(ctx, dst, v.Otherwise.Nodes)
+		p.processNodes(ctx, resC, v.Otherwise.Nodes)
 	case *esi.ExceptElement:
-		return &UnexpectedElementError{Element: v}
+		send(nil, nil, &UnexpectedElementError{Element: v})
 	case *esi.IncludeElement:
-		var data []byte
-		var err error
-
-		if inc == nil {
-			if inc, err = p.queueInclude(ctx, v); err != nil {
-				return err
-			}
+		if p.opts.incFunc == nil {
+			send(nil, nil, &UnsupportedElementError{Element: v})
+			return
 		}
 
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
-		case <-inc.done:
-			data, err = inc.data, inc.err
-		}
+		inc, err := p.include(ctx, v)
 
-		if err != nil {
-			if v.OnError == esi.ErrorBehaviourContinue {
-				return nil
-			}
-
-			return err
-		}
-
-		_, err = dst.Write(data)
-		return err
+		send(nil, inc, err)
 	case *esi.InlineElement:
-		return &UnsupportedElementError{Element: v}
+		send(nil, nil, &UnsupportedElementError{Element: v})
 	case *esi.OtherwiseElement:
-		return &UnexpectedElementError{Element: v}
+		send(nil, nil, &UnexpectedElementError{Element: v})
 	case *esi.RemoveElement:
-		return nil
 	case *esi.RawData:
-		_, err := dst.Write(v.Bytes)
-		return err
+		send(v.Bytes, nil, nil)
 	case *esi.TryElement:
-		var buf bytes.Buffer
+		attemptCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
-		if err := p.processNodes(ctx, &buf, v.Attempt.Nodes); err == nil {
-			_, err := buf.WriteTo(dst)
-			return err
+		attemptC := make(chan processedNode, 32)
+
+		go func() {
+			defer close(attemptC)
+			p.processNodes(attemptCtx, attemptC, v.Attempt.Nodes)
+		}()
+
+		var allData [][]byte
+
+		for attempt := range attemptC {
+			data, err := attempt.wait(ctx)
+			if err != nil {
+				p.processNodes(ctx, resC, v.Except.Nodes)
+				return
+			}
+			allData = append(allData, data)
 		}
 
-		return p.processNodes(ctx, dst, v.Except.Nodes)
+		for _, data := range allData {
+			send(data, nil, nil)
+		}
 	case *esi.VarsElement:
-		return &UnsupportedElementError{Element: v}
+		send(nil, nil, &UnsupportedElementError{Element: v})
 	case *esi.WhenElement:
-		return &UnexpectedElementError{Element: v}
+		send(nil, nil, &UnexpectedElementError{Element: v})
 	default:
 		panic("unreachable")
 	}
 }
 
-func (p *Processor) processNodes(ctx context.Context, dst io.Writer, nodes []esi.Node) error {
-	var includes map[esi.Node]*include
-
-	if p.opts.incFunc != nil {
-		includes, _ = p.queueIncludes(ctx, nodes)
-	}
-
+func (p *Processor) processNodes(ctx context.Context, resC chan<- processedNode, nodes []esi.Node) {
 	for _, node := range nodes {
-		if err := p.processNode(ctx, dst, node, includes[node]); err != nil {
-			return err
-		}
+		p.processNode(ctx, resC, node)
 	}
+}
 
-	return nil
+func (p *Processor) processNodesIter(ctx context.Context, resC chan<- processedNode, nodes iter.Seq2[esi.Node, error]) {
+	for node, err := range nodes {
+		if err != nil {
+			select {
+			case <-ctx.Done():
+			case resC <- processedNode{err: err}:
+			}
+			return
+		}
+
+		p.processNode(ctx, resC, node)
+	}
 }
 
 func attrsToMap(attrs []esixml.Attr) map[string]string {
@@ -352,27 +373,38 @@ func attrsToMap(attrs []esixml.Attr) map[string]string {
 	return m
 }
 
-func (p *Processor) include(ctx context.Context, inc *esi.IncludeElement) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+func (p *Processor) include(ctx context.Context, ele *esi.IncludeElement) (*include, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case p.incSema <- struct{}{}:
 	}
 
-	meta := attrsToMap(inc.Attr)
+	inc := &include{done: make(chan struct{})}
 
-	data, err := p.includeURL(ctx, inc.Source, meta)
+	go func() {
+		defer close(inc.done)
+		defer func() {
+			<-p.incSema
+		}()
 
-	if err != nil && inc.Alt != "" {
-		data, err = p.includeURL(ctx, inc.Alt, meta)
-	}
+		meta := attrsToMap(ele.Attr)
 
-	return data, err
+		inc.data, inc.err = p.includeURL(ctx, ele.Source, meta)
+
+		if inc.err != nil && ele.Alt != "" {
+			inc.data, inc.err = p.includeURL(ctx, ele.Alt, meta)
+		}
+
+		if inc.err != nil && ele.OnError == esi.ErrorBehaviourContinue {
+			inc.err = nil
+		}
+	}()
+
+	return inc, nil
 }
 
 func (p *Processor) includeURL(ctx context.Context, urlStr string, meta map[string]string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
 	if p.opts.env == nil {
 		return p.opts.incFunc(ctx, urlStr, meta)
 	}
@@ -383,59 +415,4 @@ func (p *Processor) includeURL(ctx context.Context, urlStr string, meta map[stri
 	}
 
 	return p.opts.incFunc(ctx, urlStr, meta)
-}
-
-func (p *Processor) handleInclude(item *include) {
-	defer close(item.done)
-	item.data, item.err = p.include(item.ctx, item.inc)
-}
-
-func (p *Processor) handleIncludes() {
-	for {
-		item, ok := p.incQueue.pop(p.ctx.Done())
-		if !ok {
-			return
-		}
-		p.handleInclude(item)
-	}
-}
-
-func (p *Processor) queueInclude(ctx context.Context, inc *esi.IncludeElement) (*include, error) {
-	if p.opts.incFunc == nil {
-		return nil, &UnsupportedElementError{Element: inc}
-	}
-
-	item := &include{
-		ctx:  ctx,
-		inc:  inc,
-		done: make(chan struct{}),
-	}
-
-	p.incQueue.push(item)
-
-	return item, nil
-}
-
-func (p *Processor) queueIncludes(ctx context.Context, nodes []esi.Node) (map[esi.Node]*include, error) {
-	var m map[esi.Node]*include
-
-	for _, node := range nodes {
-		inc, ok := node.(*esi.IncludeElement)
-		if !ok {
-			continue
-		}
-
-		item, err := p.queueInclude(ctx, inc)
-		if err != nil {
-			return nil, err
-		}
-
-		if m == nil {
-			m = make(map[esi.Node]*include)
-		}
-
-		m[inc] = item
-	}
-
-	return m, nil
 }

@@ -117,8 +117,6 @@ proc := esiproc.New(
     esiproc.WithFetchFunc(fetch))
 ```
 
-When finished with the processor, call [Processor.Release][7] to release all resources.
-
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
@@ -134,7 +132,6 @@ Please make sure to update tests as appropriate.
 [4]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Env
 [5]: https://pkg.go.dev/github.com/nussjustin/esi/esiexpr/
 [6]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#WithEnv
-[7]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor.Release
 [8]: https://pkg.go.dev/github.com/nussjustin/esi/#NewParser
 [9]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.Reset
 [10]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.Next
