@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"sync"
 
 	"github.com/nussjustin/esi"
 	"github.com/nussjustin/esi/esiexpr/ast"
@@ -205,42 +206,64 @@ func New(opts ...ProcessorOpt) *Processor {
 // If Process is called after Release, an error is returned.
 func (p *Processor) Process(ctx context.Context, w io.Writer, nodes iter.Seq2[esi.Node, error]) (int, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	resC := make(chan processedNode, 32)
 
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var firstErr error
+	var totalWritten int
+
 	go func() {
+		defer wg.Done()
 		defer close(resC)
+
 		p.processNodesIter(ctx, resC, nodes)
 	}()
 
-	var n int
+	go func() {
+		defer wg.Done()
+		defer cancel()
 
-	for {
-		var res processedNode
-		var ok bool
+		for {
+			var res processedNode
+			var ok bool
 
-		select {
-		case <-ctx.Done():
-			return n, ctx.Err()
-		case res, ok = <-resC:
-			if !ok {
-				return n, nil
+			select {
+			case <-ctx.Done():
+				firstErr = ctx.Err()
+				return
+			case res, ok = <-resC:
+				if !ok {
+					return
+				}
+
+				data, err := res.wait(ctx)
+				if err != nil {
+					firstErr = err
+					return
+				}
+
+				n1, err := w.Write(data)
+				if err != nil {
+					firstErr = err
+					return
+				}
+
+				totalWritten += n1
 			}
-
-			data, err := res.wait(ctx)
-			if err != nil {
-				return 0, err
-			}
-
-			n1, err := w.Write(data)
-			if err != nil {
-				return 0, err
-			}
-
-			n += n1
 		}
+	}()
+
+	// Ensure we are completely finished with reading from nodes to avoid data races when re-using parsers.
+	wg.Wait()
+
+	if firstErr != nil {
+		return 0, firstErr
 	}
+
+	return totalWritten, nil
 }
 
 func (p *Processor) processNode(ctx context.Context, resC chan<- processedNode, node esi.Node) {
