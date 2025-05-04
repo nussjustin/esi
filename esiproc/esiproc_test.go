@@ -165,9 +165,9 @@ func TestProcessor(t *testing.T) {
 			Expected: `before {"url":"/test"} after`,
 		},
 		{
-			Name:     "include with meta",
+			Name:     "include with extra attributes",
 			Input:    `before <esi:include src="/test" alt="/panic" attr1="value1" ns:attr2="value2"/> after`,
-			Expected: `before {"meta":{"attr1":"value1","ns:attr2":"value2"},"url":"/test"} after`,
+			Expected: `before {"url":"/test"} after`,
 		},
 		{
 			Name:  "include error",
@@ -359,7 +359,7 @@ func TestProcessor(t *testing.T) {
 		t.Run(testCase.Name, func(t *testing.T) {
 			defaultOpts := []esiproc.ProcessorOpt{
 				esiproc.WithIncludeConcurrency(4),
-				esiproc.WithIncludeFunc(func(_ context.Context, urlStr string, meta map[string]string) ([]byte, error) {
+				esiproc.WithIncludeFunc(func(_ context.Context, _ *esiproc.Processor, urlStr string) ([]byte, error) {
 					parsed, err := url.Parse(urlStr)
 					if err != nil {
 						panic(err)
@@ -371,13 +371,7 @@ func TestProcessor(t *testing.T) {
 					case "/panic":
 						panic("unexpected include call")
 					default:
-						m := map[string]any{"url": urlStr}
-
-						if meta != nil {
-							m["meta"] = meta
-						}
-
-						return json.Marshal(m)
+						return json.Marshal(map[string]any{"url": urlStr})
 					}
 				}),
 				esiproc.WithEnv(testEnv{}),
@@ -437,7 +431,7 @@ func BenchmarkProcessor(b *testing.B) {
 
 		p := esiproc.New(
 			esiproc.WithIncludeConcurrency(4),
-			esiproc.WithIncludeFunc(func(_ context.Context, urlStr string, _ map[string]string) ([]byte, error) {
+			esiproc.WithIncludeFunc(func(_ context.Context, _ *esiproc.Processor, urlStr string) ([]byte, error) {
 				return []byte(urlStr), nil
 			}))
 

@@ -11,7 +11,6 @@ import (
 
 	"github.com/nussjustin/esi"
 	"github.com/nussjustin/esi/esiexpr/ast"
-	"github.com/nussjustin/esi/esixml"
 )
 
 // InvalidExpressionResultError is returned when the result of an expression has the wrong type.
@@ -89,7 +88,7 @@ type Env interface {
 }
 
 // IncludeFunc defines the signature for functions used to include data for <esi:include/> elements.
-type IncludeFunc func(ctx context.Context, urlStr string, meta map[string]string) ([]byte, error)
+type IncludeFunc func(ctx context.Context, proc *Processor, urlStr string) ([]byte, error)
 
 // ProcessorOpt is the type for functions that can be used to customize the behaviour of a [Processor].
 type ProcessorOpt func(*processorOptions)
@@ -382,41 +381,20 @@ func (p *Processor) processNodesIter(ctx context.Context, resC chan<- processedN
 	}
 }
 
-func attrsToMap(attrs []esixml.Attr) map[string]string {
-	if len(attrs) == 0 {
-		return nil
-	}
-
-	m := make(map[string]string, len(attrs))
-
-	for _, attr := range attrs {
-		m[attr.Name.String()] = attr.Value
-	}
-
-	return m
-}
-
 func (p *Processor) include(ctx context.Context, ele *esi.IncludeElement) (*include, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case p.incSema <- struct{}{}:
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	inc := &include{done: make(chan struct{})}
 
 	go func() {
 		defer close(inc.done)
-		defer func() {
-			<-p.incSema
-		}()
 
-		meta := attrsToMap(ele.Attr)
-
-		inc.data, inc.err = p.includeURL(ctx, ele.Source, meta)
+		inc.data, inc.err = p.doInclude(ctx, ele.Source)
 
 		if inc.err != nil && ele.Alt != "" {
-			inc.data, inc.err = p.includeURL(ctx, ele.Alt, meta)
+			inc.data, inc.err = p.doInclude(ctx, ele.Alt)
 		}
 
 		if inc.err != nil && ele.OnError == esi.ErrorBehaviourContinue {
@@ -427,9 +405,19 @@ func (p *Processor) include(ctx context.Context, ele *esi.IncludeElement) (*incl
 	return inc, nil
 }
 
-func (p *Processor) includeURL(ctx context.Context, urlStr string, meta map[string]string) ([]byte, error) {
+func (p *Processor) doInclude(ctx context.Context, urlStr string) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case p.incSema <- struct{}{}:
+	}
+
+	defer func() {
+		<-p.incSema
+	}()
+
 	if p.opts.env == nil {
-		return p.opts.incFunc(ctx, urlStr, meta)
+		return p.opts.incFunc(ctx, p, urlStr)
 	}
 
 	urlStr, err := p.opts.env.Interpolate(ctx, urlStr)
@@ -437,5 +425,5 @@ func (p *Processor) includeURL(ctx context.Context, urlStr string, meta map[stri
 		return nil, err
 	}
 
-	return p.opts.incFunc(ctx, urlStr, meta)
+	return p.opts.incFunc(ctx, p, urlStr)
 }
