@@ -122,9 +122,9 @@ func TestProcessor(t *testing.T) {
 			Expected: "",
 		},
 		{
-			Name: "choose without test func",
+			Name: "choose without eval func",
 			Opts: []esiproc.ProcessorOpt{
-				esiproc.WithEnv(nil),
+				esiproc.WithEvalFunc(nil),
 			},
 			Input: `
 				<esi:choose>
@@ -217,7 +217,7 @@ func TestProcessor(t *testing.T) {
 		{
 			Name: "include with unsupported variable",
 			Opts: []esiproc.ProcessorOpt{
-				esiproc.WithEnv(nil),
+				esiproc.WithInterpolateFunc(nil),
 			},
 			Input:    `<esi:include src="/$(VAR1)"/>`,
 			Expected: `{"url":"/$(VAR1)"}`,
@@ -358,6 +358,7 @@ func TestProcessor(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
 			defaultOpts := []esiproc.ProcessorOpt{
+				esiproc.WithEvalFunc(testEnv{}.Eval),
 				esiproc.WithIncludeConcurrency(4),
 				esiproc.WithIncludeFunc(func(_ context.Context, _ *esiproc.Processor, urlStr string) ([]byte, error) {
 					parsed, err := url.Parse(urlStr)
@@ -374,7 +375,7 @@ func TestProcessor(t *testing.T) {
 						return json.Marshal(map[string]any{"url": urlStr})
 					}
 				}),
-				esiproc.WithEnv(testEnv{}),
+				esiproc.WithInterpolateFunc(testEnv{}.Interpolate),
 			}
 
 			p := esiproc.New(append(defaultOpts, testCase.Opts...)...)

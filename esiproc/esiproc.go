@@ -78,33 +78,31 @@ func (e *UnsupportedElementError) Unwrap() error {
 	return errors.ErrUnsupported
 }
 
-// Env implements methods for processing ESI expressions and variables.
-type Env interface {
-	// Eval evaluates the given ESI expression and returns the boolean result.
-	Eval(ctx context.Context, expr string) (any, error)
-
-	// Interpolate replaces variables inside the given string with their actual or default value.
-	Interpolate(ctx context.Context, s string) (string, error)
-}
+// EvalFunc defines the signature for functions used to evaluate bool-producing ESI expressions.
+type EvalFunc func(ctx context.Context, expr string) (any, error)
 
 // IncludeFunc defines the signature for functions used to include data for <esi:include/> elements.
 type IncludeFunc func(ctx context.Context, proc *Processor, urlStr string) ([]byte, error)
+
+// InterpolateFunc defines the signature for functions used to interpolate variables in a given string.
+type InterpolateFunc func(ctx context.Context, s string) (string, error)
 
 // ProcessorOpt is the type for functions that can be used to customize the behaviour of a [Processor].
 type ProcessorOpt func(*processorOptions)
 
 type processorOptions struct {
-	env            Env
-	incConcurrency int
-	incFunc        IncludeFunc
+	evalFunc        EvalFunc
+	interpolateFunc InterpolateFunc
+	incConcurrency  int
+	incFunc         IncludeFunc
 }
 
-// WithEnv specifies the environment to use for processing.
+// WithEvalFunc specifies the function used to evaluate expressions for <esi:when> elements.
 //
-// If env is nil, <esi:when/> elements will be unsupported, leading to [UnsupportedElementError] when one is found.
-func WithEnv(env Env) ProcessorOpt {
+// If not given or if the last given function is nil, <esi:choose> elements will be unsupported.
+func WithEvalFunc(f EvalFunc) ProcessorOpt {
 	return func(p *processorOptions) {
-		p.env = env
+		p.evalFunc = f
 	}
 }
 
@@ -128,6 +126,15 @@ func WithIncludeConcurrency(n int) ProcessorOpt {
 func WithIncludeFunc(f IncludeFunc) ProcessorOpt {
 	return func(p *processorOptions) {
 		p.incFunc = f
+	}
+}
+
+// WithInterpolateFunc specifies the function used to interpolate variables into URLs for <esi:include> elements.
+//
+// If not given or if the last given function is nil, no interpolation is performance.
+func WithInterpolateFunc(f InterpolateFunc) ProcessorOpt {
+	return func(p *processorOptions) {
+		p.interpolateFunc = f
 	}
 }
 
@@ -184,7 +191,7 @@ func (p *processedNode) wait(ctx context.Context) ([]byte, error) {
 
 // New creates a new Processor and applies the given options.
 //
-// The default is equivalent to: New(WithIncludeConcurrency(1), WithIncludeFunc(nil), WithTestFunc(nil)).
+// The default is equivalent to: New(WithIncludeConcurrency(1)).
 func New(opts ...ProcessorOpt) *Processor {
 	p := &Processor{}
 	p.opts.incConcurrency = 1
@@ -265,6 +272,32 @@ func (p *Processor) Process(ctx context.Context, w io.Writer, nodes iter.Seq2[es
 	return totalWritten, nil
 }
 
+func (p *Processor) eval(ctx context.Context, choose *esi.ChooseElement, when *esi.WhenElement) (bool, error) {
+	if p.opts.evalFunc == nil {
+		return false, &UnsupportedElementError{Element: choose}
+	}
+
+	result, err := p.opts.evalFunc(ctx, when.Test)
+	if err != nil {
+		return false, err
+	}
+
+	resultBool, ok := result.(bool)
+	if !ok {
+		return false, &InvalidExpressionResultError{Element: when, Expr: when.Test, Result: result}
+	}
+
+	return resultBool, nil
+}
+
+func (p *Processor) interpolate(ctx context.Context, s string) (string, error) {
+	if p.opts.interpolateFunc == nil {
+		return s, nil
+	}
+
+	return p.opts.interpolateFunc(ctx, s)
+}
+
 func (p *Processor) processNode(ctx context.Context, resC chan<- processedNode, node esi.Node) {
 	send := func(data []byte, inc *include, err error) {
 		select {
@@ -278,25 +311,14 @@ func (p *Processor) processNode(ctx context.Context, resC chan<- processedNode, 
 		send(nil, nil, &UnexpectedElementError{Element: v})
 	case *esi.CommentElement:
 	case *esi.ChooseElement:
-		if p.opts.env == nil {
-			send(nil, nil, &UnsupportedElementError{Element: v})
-			return
-		}
-
 		for _, w := range v.When {
-			result, err := p.opts.env.Eval(ctx, w.Test)
+			result, err := p.eval(ctx, v, w)
 			if err != nil {
 				send(nil, nil, err)
 				return
 			}
 
-			resultBool, ok := result.(bool)
-			if !ok {
-				send(nil, nil, &InvalidExpressionResultError{Element: w, Expr: w.Test, Result: result})
-				return
-			}
-
-			if !resultBool {
+			if !result {
 				continue
 			}
 
@@ -416,14 +438,10 @@ func (p *Processor) doInclude(ctx context.Context, urlStr string) ([]byte, error
 		<-p.incSema
 	}()
 
-	if p.opts.env == nil {
-		return p.opts.incFunc(ctx, p, urlStr)
-	}
-
-	urlStr, err := p.opts.env.Interpolate(ctx, urlStr)
+	interpolatedURL, err := p.interpolate(ctx, urlStr)
 	if err != nil {
 		return nil, err
 	}
 
-	return p.opts.incFunc(ctx, p, urlStr)
+	return p.opts.incFunc(ctx, p, interpolatedURL)
 }

@@ -52,7 +52,7 @@ func (n *NonBoolValueError) Is(target error) bool {
 	return errors.As(target, &o) && n.Value == o.Value
 }
 
-// Env implements the [esiproc.Env] interface using the esiexpr package to parse expressions.
+// Env implements methods for evaluating ESI expressions and interpolating variables in strings.
 type Env struct {
 	// CompareValues is called by [Eval] when comparing values.
 	//
@@ -89,6 +89,8 @@ func poolParser(p *ast.Parser[string]) {
 }
 
 // Eval evaluates the given expression and returns the result.
+//
+// It implements the [esiproc.EvalFunc] signature.
 func (e *Env) Eval(ctx context.Context, data string) (any, error) {
 	p := getParser(data)
 	defer poolParser(p)
@@ -102,6 +104,8 @@ func (e *Env) Eval(ctx context.Context, data string) (any, error) {
 }
 
 // Interpolate replaces all ESI variables in the given string.
+//
+// It implements the [esiproc.InterpolateFunc] signature.
 func (e *Env) Interpolate(ctx context.Context, s string) (string, error) {
 	p := getParser("")
 	defer poolParser(p)
