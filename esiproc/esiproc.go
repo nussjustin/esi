@@ -78,11 +78,23 @@ func (e *UnsupportedElementError) Unwrap() error {
 	return errors.ErrUnsupported
 }
 
+// Client defines methods used for fetching URLs for the processing of <esi:include/> elements.
+type Client interface {
+	// Do is called with the URL that should be included (either the src or alt attribute) and should return the
+	// data to include.
+	Do(ctx context.Context, proc *Processor, urlStr string, extra map[string]string) ([]byte, error)
+}
+
+// ClientFunc implements a [Client] by calling itself.
+type ClientFunc func(ctx context.Context, proc *Processor, urlStr string, extra map[string]string) ([]byte, error)
+
+// Do calls c and returns the result.
+func (c ClientFunc) Do(ctx context.Context, proc *Processor, urlStr string, extra map[string]string) ([]byte, error) {
+	return c(ctx, proc, urlStr, extra)
+}
+
 // EvalFunc defines the signature for functions used to evaluate bool-producing ESI expressions.
 type EvalFunc func(ctx context.Context, expr string) (any, error)
-
-// IncludeFunc defines the signature for functions used to include data for <esi:include/> elements.
-type IncludeFunc func(ctx context.Context, urlStr string) ([]byte, error)
 
 // InterpolateFunc defines the signature for functions used to interpolate variables in a given string.
 type InterpolateFunc func(ctx context.Context, s string) (string, error)
@@ -91,10 +103,32 @@ type InterpolateFunc func(ctx context.Context, s string) (string, error)
 type ProcessorOpt func(*processorOptions)
 
 type processorOptions struct {
-	evalFunc        EvalFunc
-	interpolateFunc InterpolateFunc
-	incConcurrency  int
-	incFunc         IncludeFunc
+	client            Client
+	clientConcurrency int
+	evalFunc          EvalFunc
+	interpolateFunc   InterpolateFunc
+}
+
+// WithClient specifies the client used to process <esi:include/> elements.
+//
+// If c is nil, <esi:include/> elements will be unsupported.
+func WithClient(c Client) ProcessorOpt {
+	return func(p *processorOptions) {
+		p.client = c
+	}
+}
+
+// WithClientConcurrency configures a [Processor] to make at most n concurrent calls to the configured [Client].
+//
+// If n is < 1, WithClientConcurrency panics.
+func WithClientConcurrency(n int) ProcessorOpt {
+	if n < 1 {
+		panic("WithClientConcurrency called with n < 1")
+	}
+
+	return func(p *processorOptions) {
+		p.clientConcurrency = n
+	}
 }
 
 // WithEvalFunc specifies the function used to evaluate expressions for <esi:when> elements.
@@ -103,29 +137,6 @@ type processorOptions struct {
 func WithEvalFunc(f EvalFunc) ProcessorOpt {
 	return func(p *processorOptions) {
 		p.evalFunc = f
-	}
-}
-
-// WithIncludeConcurrency configures a [Processor] to make at most n concurrent calls to the configured [IncludeFunc]
-// at a time.
-//
-// If n is < 1, WithIncludeConcurrency panics.
-func WithIncludeConcurrency(n int) ProcessorOpt {
-	if n < 1 {
-		panic("WithIncludeConcurrency called with n < 1")
-	}
-
-	return func(p *processorOptions) {
-		p.incConcurrency = n
-	}
-}
-
-// WithIncludeFunc specifies the function used to resolve <esi:include/> elements.
-//
-// If f is nil, <esi:include/> elements will be unsupported, leading to [UnsupportedElementError] when one is found.
-func WithIncludeFunc(f IncludeFunc) ProcessorOpt {
-	return func(p *processorOptions) {
-		p.incFunc = f
 	}
 }
 
@@ -191,16 +202,16 @@ func (p *processedNode) wait(ctx context.Context) ([]byte, error) {
 
 // New creates a new Processor and applies the given options.
 //
-// The default is equivalent to: New(WithIncludeConcurrency(1)).
+// The default is equivalent to: New(WithClientConcurrency(1)).
 func New(opts ...ProcessorOpt) *Processor {
 	p := &Processor{}
-	p.opts.incConcurrency = 1
+	p.opts.clientConcurrency = 1
 
 	for _, opt := range opts {
 		opt(&p.opts)
 	}
 
-	p.incSema = make(chan struct{}, p.opts.incConcurrency)
+	p.incSema = make(chan struct{}, p.opts.clientConcurrency)
 
 	return p
 }
@@ -334,7 +345,7 @@ func (p *Processor) processNode(ctx context.Context, resC chan<- processedNode, 
 	case *esi.ExceptElement:
 		send(nil, nil, &UnexpectedElementError{Element: v})
 	case *esi.IncludeElement:
-		if p.opts.incFunc == nil {
+		if p.opts.client == nil {
 			send(nil, nil, &UnsupportedElementError{Element: v})
 			return
 		}
@@ -413,10 +424,19 @@ func (p *Processor) include(ctx context.Context, ele *esi.IncludeElement) (*incl
 	go func() {
 		defer close(inc.done)
 
-		inc.data, inc.err = p.doInclude(ctx, ele.Source)
+		var extra map[string]string
+
+		if len(ele.Attr) != 0 {
+			extra = make(map[string]string, len(ele.Attr))
+			for _, attr := range ele.Attr {
+				extra[attr.Name.String()] = attr.Value
+			}
+		}
+
+		inc.data, inc.err = p.doInclude(ctx, ele.Source, extra)
 
 		if inc.err != nil && ele.Alt != "" {
-			inc.data, inc.err = p.doInclude(ctx, ele.Alt)
+			inc.data, inc.err = p.doInclude(ctx, ele.Alt, extra)
 		}
 
 		if inc.err != nil && ele.OnError == esi.ErrorBehaviourContinue {
@@ -427,7 +447,7 @@ func (p *Processor) include(ctx context.Context, ele *esi.IncludeElement) (*incl
 	return inc, nil
 }
 
-func (p *Processor) doInclude(ctx context.Context, urlStr string) ([]byte, error) {
+func (p *Processor) doInclude(ctx context.Context, urlStr string, extra map[string]string) ([]byte, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -443,5 +463,6 @@ func (p *Processor) doInclude(ctx context.Context, urlStr string) ([]byte, error
 		return nil, err
 	}
 
-	return p.opts.incFunc(ctx, interpolatedURL)
+	// TODO: Test extr
+	return p.opts.client.Do(ctx, p, interpolatedURL, extra)
 }

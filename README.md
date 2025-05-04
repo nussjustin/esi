@@ -34,32 +34,14 @@ for node, err := parser.All {
 
 Once the input is parsed, it can be used processed using the [esiproc][1] package.
 
-To do this first create a [esiproc.Processor][2] using [esiproc.New][3] and configure it to fetch data for ESI includes:
+To do this first create a [esiproc.Processor][2] using [esiproc.New][3] and configure it to fetch data for ESI includes.
+
+The [esihttp][13] package implements a custom type that can be used to resolve includes via HTTP.
 
 ```go
-inc := esiproc.IncludeFunc(func(ctx context.Context, urlStr string, _ map[string]string) ([]byte, error) {
-    req, err := http.NewRequestWithContext(ctx, "GET", inc.Source, nil)
-    if err != nil {
-        return nil, err
-    }
-    
-    resp, err := http.Do(req)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-    
-    if resp.StatusCode != http.StatusOK {
-        // do something...
-    }
-    
-    return io.ReadAll(resp.Body)
-})
-
 proc := esiproc.New(
-    // Allow up to 4 concurrent HTTP requests
-    esiproc.WithIncludeConcurrency(4),
-    esiproc.WithIncludeFunc(inc))
+    esiproc.WithClient(&esihttp.Client{}),
+    esiproc.WithClientConcurrency(4))
 ```
 
 Once created the processor can be used to process multiple sets of nodes, both sequentially and concurrently.
@@ -137,3 +119,4 @@ Please make sure to update tests as appropriate.
 [10]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.Next
 [11]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.All
 [12]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor.Process
+[13]: https://pkg.go.dev/github.com/nussjustin/esi/esihttp/

@@ -157,17 +157,17 @@ func TestProcessor(t *testing.T) {
 		{
 			Name:     "include",
 			Input:    `before <esi:include src="/test"/> after`,
-			Expected: `before {"url":"/test"} after`,
+			Expected: `before {"extra":null,"url":"/test"} after`,
 		},
 		{
 			Name:     "include with alt",
 			Input:    `before <esi:include src="/test" alt="/panic"/> after`,
-			Expected: `before {"url":"/test"} after`,
+			Expected: `before {"extra":null,"url":"/test"} after`,
 		},
 		{
 			Name:     "include with extra attributes",
 			Input:    `before <esi:include src="/test" alt="/panic" attr1="value1" ns:attr2="value2"/> after`,
-			Expected: `before {"url":"/test"} after`,
+			Expected: `before {"extra":{"attr1":"value1","ns:attr2":"value2"},"url":"/test"} after`,
 		},
 		{
 			Name:  "include error",
@@ -177,7 +177,7 @@ func TestProcessor(t *testing.T) {
 		{
 			Name:     "include error with alt",
 			Input:    `before <esi:include src="/error" alt="/alt"/> after`,
-			Expected: `before {"url":"/alt"} after`,
+			Expected: `before {"extra":null,"url":"/alt"} after`,
 		},
 		{
 			Name:  "include error with alt error",
@@ -197,7 +197,7 @@ func TestProcessor(t *testing.T) {
 		{
 			Name: "include without include func",
 			Opts: []esiproc.ProcessorOpt{
-				esiproc.WithIncludeFunc(nil),
+				esiproc.WithClient(nil),
 			},
 			Input: `before <esi:include src="/included"/> after`,
 			Error: &esiproc.UnsupportedElementError{
@@ -207,12 +207,12 @@ func TestProcessor(t *testing.T) {
 		{
 			Name:     "include with variable in src",
 			Input:    `<esi:include src="/$(VAR1)"/>`,
-			Expected: `{"url":"/var 1"}`,
+			Expected: `{"extra":null,"url":"/var 1"}`,
 		},
 		{
 			Name:     "include with variable in alt",
 			Input:    `<esi:include src="/error" alt="/$(VAR2)"/>`,
-			Expected: `{"url":"/var 2"}`,
+			Expected: `{"extra":null,"url":"/var 2"}`,
 		},
 		{
 			Name: "include with unsupported variable",
@@ -220,7 +220,7 @@ func TestProcessor(t *testing.T) {
 				esiproc.WithInterpolateFunc(nil),
 			},
 			Input:    `<esi:include src="/$(VAR1)"/>`,
-			Expected: `{"url":"/$(VAR1)"}`,
+			Expected: `{"extra":null,"url":"/$(VAR1)"}`,
 		},
 		{
 			Name:  "include with failed interpolation",
@@ -253,7 +253,7 @@ func TestProcessor(t *testing.T) {
 					<esi:except><esi:include src="/panic"/></esi:except>
 				</esi:try>
 			`,
-			Expected: `{"url":"/attempt"}`,
+			Expected: `{"extra":null,"url":"/attempt"}`,
 		},
 		{
 			Name: "try with failed include",
@@ -263,7 +263,7 @@ func TestProcessor(t *testing.T) {
 					<esi:except><esi:include src="/except"/></esi:except>
 				</esi:try>
 			`,
-			Expected: `{"url":"/except"}`,
+			Expected: `{"extra":null,"url":"/except"}`,
 		},
 		{
 			Name: "try with failed include with alt",
@@ -273,7 +273,7 @@ func TestProcessor(t *testing.T) {
 					<esi:except><esi:include src="/panic"/></esi:except>
 				</esi:try>
 			`,
-			Expected: `{"url":"/alt"}`,
+			Expected: `{"extra":null,"url":"/alt"}`,
 		},
 		{
 			Name: "try with failed include with onerror=continue",
@@ -346,7 +346,7 @@ func TestProcessor(t *testing.T) {
 						<p>some html</p>
 						
 								except start
-								{"url":"hello world"}
+								{"extra":null,"url":"hello world"}
 								except end
 							
 						before remove
@@ -357,10 +357,8 @@ func TestProcessor(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
-			defaultOpts := []esiproc.ProcessorOpt{
-				esiproc.WithEvalFunc(testEnv{}.Eval),
-				esiproc.WithIncludeConcurrency(4),
-				esiproc.WithIncludeFunc(func(_ context.Context, urlStr string) ([]byte, error) {
+			client := esiproc.ClientFunc(
+				func(_ context.Context, _ *esiproc.Processor, urlStr string, extra map[string]string) ([]byte, error) {
 					parsed, err := url.Parse(urlStr)
 					if err != nil {
 						panic(err)
@@ -372,9 +370,15 @@ func TestProcessor(t *testing.T) {
 					case "/panic":
 						panic("unexpected include call")
 					default:
-						return json.Marshal(map[string]any{"url": urlStr})
+						return json.Marshal(map[string]any{"extra": extra, "url": urlStr})
 					}
-				}),
+				},
+			)
+
+			defaultOpts := []esiproc.ProcessorOpt{
+				esiproc.WithEvalFunc(testEnv{}.Eval),
+				esiproc.WithClientConcurrency(4),
+				esiproc.WithClient(client),
 				esiproc.WithInterpolateFunc(testEnv{}.Interpolate),
 			}
 
@@ -430,11 +434,15 @@ func BenchmarkProcessor(b *testing.B) {
 			nodes = append(nodes, node)
 		}
 
-		p := esiproc.New(
-			esiproc.WithIncludeConcurrency(4),
-			esiproc.WithIncludeFunc(func(_ context.Context, urlStr string) ([]byte, error) {
+		client := esiproc.ClientFunc(
+			func(_ context.Context, _ *esiproc.Processor, urlStr string, _ map[string]string) ([]byte, error) {
 				return []byte(urlStr), nil
-			}))
+			},
+		)
+
+		p := esiproc.New(
+			esiproc.WithClient(client),
+			esiproc.WithClientConcurrency(4))
 
 		b.ReportAllocs()
 		b.ResetTimer()
