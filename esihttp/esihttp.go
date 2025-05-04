@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/nussjustin/esi/esiproc"
 	"io"
 	"net/http"
 )
@@ -70,8 +71,10 @@ type Client struct {
 	On5xx func(resp *http.Response) ([]byte, error)
 }
 
+var _ esiproc.Client = (*Client)(nil)
+
 // Do fetches data from the given URL and returns the response.
-func (c *Client) Do(ctx context.Context, urlStr string, extra map[string]string) ([]byte, error) {
+func (c *Client) Do(ctx context.Context, _ *esiproc.Processor, urlStr string, extra map[string]string) ([]byte, error) {
 	client := c.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
