@@ -82,7 +82,7 @@ func (e *UnsupportedElementError) Unwrap() error {
 type EvalFunc func(ctx context.Context, expr string) (any, error)
 
 // IncludeFunc defines the signature for functions used to include data for <esi:include/> elements.
-type IncludeFunc func(ctx context.Context, proc *Processor, urlStr string) ([]byte, error)
+type IncludeFunc func(ctx context.Context, urlStr string) ([]byte, error)
 
 // InterpolateFunc defines the signature for functions used to interpolate variables in a given string.
 type InterpolateFunc func(ctx context.Context, s string) (string, error)
@@ -443,5 +443,5 @@ func (p *Processor) doInclude(ctx context.Context, urlStr string) ([]byte, error
 		return nil, err
 	}
 
-	return p.opts.incFunc(ctx, p, interpolatedURL)
+	return p.opts.incFunc(ctx, interpolatedURL)
 }

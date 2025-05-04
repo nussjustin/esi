@@ -360,7 +360,7 @@ func TestProcessor(t *testing.T) {
 			defaultOpts := []esiproc.ProcessorOpt{
 				esiproc.WithEvalFunc(testEnv{}.Eval),
 				esiproc.WithIncludeConcurrency(4),
-				esiproc.WithIncludeFunc(func(_ context.Context, _ *esiproc.Processor, urlStr string) ([]byte, error) {
+				esiproc.WithIncludeFunc(func(_ context.Context, urlStr string) ([]byte, error) {
 					parsed, err := url.Parse(urlStr)
 					if err != nil {
 						panic(err)
@@ -432,7 +432,7 @@ func BenchmarkProcessor(b *testing.B) {
 
 		p := esiproc.New(
 			esiproc.WithIncludeConcurrency(4),
-			esiproc.WithIncludeFunc(func(_ context.Context, _ *esiproc.Processor, urlStr string) ([]byte, error) {
+			esiproc.WithIncludeFunc(func(_ context.Context, urlStr string) ([]byte, error) {
 				return []byte(urlStr), nil
 			}))
 
