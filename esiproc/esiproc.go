@@ -463,6 +463,5 @@ func (p *Processor) doInclude(ctx context.Context, urlStr string, extra map[stri
 		return nil, err
 	}
 
-	// TODO: Test extr
 	return p.opts.client.Do(ctx, p, interpolatedURL, extra)
 }
