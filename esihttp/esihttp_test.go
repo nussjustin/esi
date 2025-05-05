@@ -1,9 +1,13 @@
 package esihttp_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -16,6 +20,10 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
+func newResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+}
+
 func errorTransport(err error) http.RoundTripper {
 	return roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return nil, err
@@ -24,7 +32,7 @@ func errorTransport(err error) http.RoundTripper {
 
 func fixedTransport(statusCode int, body string) http.RoundTripper {
 	return roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: statusCode, Body: io.NopCloser(strings.NewReader(body))}, nil
+		return newResponse(statusCode, body), nil
 	})
 }
 
@@ -56,10 +64,77 @@ func testClient(rt http.RoundTripper) *http.Client {
 	return &http.Client{Transport: rt}
 }
 
+func createCookieJar(u *url.URL, cookies []*http.Cookie) http.CookieJar {
+	jar, _ := cookiejar.New(nil)
+	jar.SetCookies(u, cookies)
+	return jar
+}
+
+type readOnlyCookieJar struct{ http.CookieJar }
+
+func (r readOnlyCookieJar) SetCookies(*url.URL, []*http.Cookie) {
+	panic("can not update cookies")
+}
+
+var testURL = &url.URL{
+	Scheme: "https",
+	Host:   "example.com",
+	Path:   "/base",
+}
+
+func TestCookieJar(t *testing.T) {
+	ctx := t.Context()
+
+	if got := esihttp.CookieJar(ctx); got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+
+	want := &readOnlyCookieJar{}
+
+	ctx = esihttp.WithCookieJar(ctx, want)
+
+	if got := esihttp.CookieJar(ctx); got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestOriginalRequest(t *testing.T) {
+	ctx := t.Context()
+
+	if got := esihttp.OriginalRequest(ctx); got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+
+	want := &http.Request{}
+
+	ctx = esihttp.WithOriginalRequest(ctx, want)
+
+	if got := esihttp.OriginalRequest(ctx); got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestOriginalResponse(t *testing.T) {
+	ctx := t.Context()
+
+	if got := esihttp.OriginalResponse(ctx); got != nil { //nolint:bodyclose
+		t.Errorf("got %v, want nil", got)
+	}
+
+	want := &http.Response{}
+
+	ctx = esihttp.WithOriginalResponse(ctx, want)
+
+	if got := esihttp.OriginalResponse(ctx); got != want { //nolint:bodyclose
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
 func TestClient(t *testing.T) {
 	testCases := []struct {
 		Name          string
 		Client        esihttp.Client
+		ContextFunc   func(context.Context) context.Context
 		Expected      string
 		ExpectedError error
 	}{
@@ -163,11 +238,101 @@ func TestClient(t *testing.T) {
 			},
 			ExpectedError: errBrokenReader,
 		},
+		{
+			Name: "url resolved from original request",
+			Client: esihttp.Client{
+				HTTPClient: testClient(fixedTransport(http.StatusOK, "ok")),
+				BeforeRequest: func(req *http.Request, _ map[string]string) error {
+					if got, want := req.URL.String(), "https://example.com/test"; got != want {
+						panic(fmt.Sprintf("got URL %q, want %q", got, want))
+					}
+
+					return nil
+				},
+			},
+			ContextFunc: func(ctx context.Context) context.Context {
+				return esihttp.WithOriginalRequest(ctx, &http.Request{Method: "GET", URL: testURL})
+			},
+			Expected: "ok",
+		},
+		{
+			Name: "cookies from jar",
+			Client: esihttp.Client{
+				HTTPClient: testClient(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if c, err := req.Cookie("cookie1"); err != nil {
+						panic(fmt.Sprintf("failed to read cookie1: %v", err))
+					} else if c == nil {
+						panic("missing cookie1")
+					} else if c.Value != "value1" {
+						panic(fmt.Sprintf("got cookie1 value %q, want %q", c.Value, "value1"))
+					}
+
+					if c, err := req.Cookie("cookie2"); err != nil {
+						panic(fmt.Sprintf("failed to read cookie2: %v", err))
+					} else if c == nil {
+						panic("missing cookie2")
+					} else if c.Value != "value2" {
+						panic(fmt.Sprintf("got cookie1 value %q, want %q", c.Value, "value2"))
+					}
+
+					return newResponse(200, "ok"), nil
+				})),
+			},
+			ContextFunc: func(ctx context.Context) context.Context {
+				req := &http.Request{Method: "GET", URL: testURL}
+
+				cookies := []*http.Cookie{
+					{Name: "cookie1", Value: "value1"},
+					{Name: "cookie2", Value: "value2"},
+				}
+
+				ctx = esihttp.WithCookieJar(ctx, readOnlyCookieJar{createCookieJar(req.URL, cookies)})
+				ctx = esihttp.WithOriginalRequest(ctx, req)
+
+				return ctx
+			},
+			Expected: "ok",
+		},
+		{
+			Name: "cookies not updated",
+			Client: esihttp.Client{
+				HTTPClient: testClient(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					cookie := &http.Cookie{
+						Name:   "test",
+						Value:  "test",
+						Path:   req.URL.Path,
+						Domain: req.URL.Host,
+					}
+
+					resp := newResponse(200, "ok")
+					resp.Header.Set("Set-Cookie", cookie.String())
+
+					return resp, nil
+				})),
+			},
+			ContextFunc: func(ctx context.Context) context.Context {
+				req := &http.Request{Method: "GET", URL: testURL}
+
+				var cookies []*http.Cookie
+
+				ctx = esihttp.WithCookieJar(ctx, readOnlyCookieJar{createCookieJar(req.URL, cookies)})
+				ctx = esihttp.WithOriginalRequest(ctx, req)
+
+				return ctx
+			},
+			Expected: "ok",
+		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
-			body, err := testCase.Client.Do(t.Context(), nil, "/", map[string]string{"name": testCase.Name})
+			ctx := t.Context()
+
+			if testCase.ContextFunc != nil {
+				ctx = testCase.ContextFunc(ctx)
+			}
+
+			body, err := testCase.Client.Do(ctx, nil, "/test", map[string]string{"name": testCase.Name})
 
 			if !errors.Is(err, testCase.ExpectedError) {
 				t.Errorf("got error %v, want %v", err, testCase.ExpectedError)

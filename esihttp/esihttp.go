@@ -11,6 +11,45 @@ import (
 	"github.com/nussjustin/esi/esiproc"
 )
 
+var cookieJarKey = new(int)
+
+// CookieJar returns the cookie jar associated with the given context using [WithCookieJar].
+func CookieJar(ctx context.Context) http.CookieJar {
+	v, _ := ctx.Value(cookieJarKey).(http.CookieJar)
+	return v
+}
+
+// WithCookieJar associates the given cookie jar with the context.
+func WithCookieJar(ctx context.Context, jar http.CookieJar) context.Context {
+	return context.WithValue(ctx, cookieJarKey, jar)
+}
+
+var origReqKey = new(int)
+
+// OriginalRequest returns the request associated with the given context using [WithOriginalRequest].
+func OriginalRequest(ctx context.Context) *http.Request {
+	v, _ := ctx.Value(origReqKey).(*http.Request)
+	return v
+}
+
+// WithOriginalRequest associates the given request with the context.
+func WithOriginalRequest(ctx context.Context, origReq *http.Request) context.Context {
+	return context.WithValue(ctx, origReqKey, origReq)
+}
+
+var origRespKey = new(int)
+
+// OriginalResponse returns the response associated with the given context using [WithOriginalResponse].
+func OriginalResponse(ctx context.Context) *http.Response {
+	v, _ := ctx.Value(origRespKey).(*http.Response)
+	return v
+}
+
+// WithOriginalResponse associates the given response with the context.
+func WithOriginalResponse(ctx context.Context, origResp *http.Response) context.Context {
+	return context.WithValue(ctx, origRespKey, origResp)
+}
+
 // ClientError is returned by [Client.Do] when receiving a 4xx response and [Client.On4xx] is nil.
 type ClientError struct {
 	// StatusCode is the returned status code.
@@ -46,10 +85,14 @@ func (e *ServerError) Is(err error) bool {
 }
 
 // Client implements a [esiproc.Client] using HTTP to fetch data from URLs.
+//
+// See [Client.Do] for more information on how requests are configured.
 type Client struct {
 	// HTTPClient is used to make HTTP requests.
 	//
-	// If nil, http.DefaultClient is used.
+	// The client should not have an associated cookie jar.
+	//
+	// If nil, [http.DefaultClient] is used.
 	HTTPClient *http.Client
 
 	// BeforeRequest is called before sending the request and can be used to customize it.
@@ -75,6 +118,12 @@ type Client struct {
 var _ esiproc.Client = (*Client)(nil)
 
 // Do fetches data from the given URL and returns the response.
+//
+// When the given context has an associated original request (see [WithOriginalRequest]), it is used to resolve the
+// URL for the new request using [url.URL.ResolveReference].
+//
+// Similarly, if the context has an associated cookie jar (see [WithCookieJar]), it will be used to add cookies to the
+// request. Note that cookies are only read from the jar, but not updated based on the response.
 func (c *Client) Do(ctx context.Context, _ *esiproc.Processor, urlStr string, extra map[string]string) ([]byte, error) {
 	client := c.HTTPClient
 	if client == nil {
@@ -84,6 +133,16 @@ func (c *Client) Do(ctx context.Context, _ *esiproc.Processor, urlStr string, ex
 	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if baseReq := OriginalRequest(ctx); baseReq != nil {
+		req.URL = baseReq.URL.ResolveReference(req.URL)
+	}
+
+	if cookieJar := CookieJar(ctx); cookieJar != nil {
+		for _, c := range cookieJar.Cookies(req.URL) {
+			req.AddCookie(c)
+		}
 	}
 
 	if c.BeforeRequest != nil {
