@@ -5,9 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/nussjustin/esi/esiproc"
 	"io"
 	"net/http"
+
+	"github.com/nussjustin/esi/esiproc"
 )
 
 // ClientError is returned by [Client.Do] when receiving a 4xx response and [Client.On4xx] is nil.

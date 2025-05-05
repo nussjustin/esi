@@ -167,7 +167,7 @@ func TestClient(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
-			body, err := testCase.Client.Do(t.Context(), "/", map[string]string{"name": testCase.Name})
+			body, err := testCase.Client.Do(t.Context(), nil, "/", map[string]string{"name": testCase.Name})
 
 			if !errors.Is(err, testCase.ExpectedError) {
 				t.Errorf("got error %v, want %v", err, testCase.ExpectedError)
