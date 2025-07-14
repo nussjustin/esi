@@ -78,11 +78,17 @@ if err := proc.Process(ctx, &buf, nodes); err != nil {
 fmt.Println(buf.Bytes())
 ```
 
-It is also possible to provide an [esiproc.Env][4] to enable the use of variables in URLs as well as
-`<esi:when test="...">` conditions.
+By default, `<esi:when/>` elements will result in an error. To fix this, an [esiproc.EvalFunc][4] must be configured and
+passed to the `esiproc.Processor` using the [esiproc.WithEvalFunc][6] function.
 
-The [esiexpr][5] package implements such an `Env` that implements the ESI variable and expression syntax. To use it,
-simply create an instance and pass it to `esiproc.New` via [esiproc.WithEnv][6]:
+Similarly, variables in the `alt` or `src` attributes of `<esi:include/>` tags are not interpolated by default. This can
+be enabled by providing an [esiproc.InterpolateFunc][14] using [esiproc.WithInterpolateFunc][15].
+
+The [esiexpr][5] package implements an `Env` type that provides methods for evaluating ESI expressions for use with
+`<esi:when/>` elements as well as the interpolation of variable in arbitrary strings.
+
+Once an `Env` has been created its method can be used with `esiproc.WithEvalFunc` and `esiproc.WithInterpolateFunc` to
+configure ann `esiproc.Proc` like this:
 
 ```go
 myEnv := &esiproc.Env{
@@ -93,10 +99,8 @@ myEnv := &esiproc.Env{
 }
 
 proc := esiproc.New(
-    esiproc.WithEnv(myEnv),
-    // Allow up to 4 concurrent HTTP requests
-    esiproc.WithFetchConcurrency(4),
-    esiproc.WithFetchFunc(fetch))
+    esiproc.WithEvalFunc(myEnv.Eval),
+    esiproc.WithInterpolateFunc(myEnv.Interpolate))
 ```
 
 ## Contributing
@@ -111,12 +115,14 @@ Please make sure to update tests as appropriate.
 [1]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/
 [2]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor
 [3]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#New
-[4]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Env
+[4]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#EvalFunc
 [5]: https://pkg.go.dev/github.com/nussjustin/esi/esiexpr/
-[6]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#WithEnv
+[6]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#WithEvalFunc
 [8]: https://pkg.go.dev/github.com/nussjustin/esi/#NewParser
 [9]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.Reset
 [10]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.Next
 [11]: https://pkg.go.dev/github.com/nussjustin/esi/#Parser.All
 [12]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#Processor.Process
 [13]: https://pkg.go.dev/github.com/nussjustin/esi/esihttp/
+[14]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#InterpolateFunc
+[15]: https://pkg.go.dev/github.com/nussjustin/esi/esiproc/#WithInterpolateFunc
