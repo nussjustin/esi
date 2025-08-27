@@ -47,30 +47,14 @@ proc := esiproc.New(
 Once created the processor can be used to process multiple sets of nodes, both sequentially and concurrently.
 
 To actually process some data, call the [Processor.Process][12] method. The method takes a `context.Context`, an
-`io.Writer` that will be written to and a slice of ESI nodes. 
+`io.Writer` that will be written to and a sequence of ESI nodes. 
 
 Assuming the variable `parser` contains a `esi.Parser`, one could process its nodes like this:
 
-_NOTE: The requirement to pass a whole slice of nodes is currently a limitation and is expected to be lifted in the
-future._
-
-_When that happens, the signature of `Processor.Process` will likely be changed to take an
-`iter.Seq2[esi.Node, error]` instead._
-
 ```go
-var nodes []esi.Node
-
-for node, err := parser.All {
-    if err != nil {
-        panic(err)	
-    }
-	
-    nodes = append(nodes, node)
-}
-
 var buf bytes.Buffer
 
-if err := proc.Process(ctx, &buf, nodes); err != nil {
+if err := proc.Process(ctx, &buf, parser.All); err != nil {
     panic(err)
 }
 
