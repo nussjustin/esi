@@ -120,10 +120,12 @@ func WithClient(c Client) ProcessorOpt {
 
 // WithClientConcurrency configures a [Processor] to make at most n concurrent calls to the configured [Client].
 //
-// If n is < 1, WithClientConcurrency panics.
+// If n is 0, no limit will be set.
+//
+// If n is < 0, WithClientConcurrency panics.
 func WithClientConcurrency(n int) ProcessorOpt {
-	if n < 1 {
-		panic("WithClientConcurrency called with n < 1")
+	if n < 0 {
+		panic("WithClientConcurrency called with n < 0")
 	}
 
 	return func(p *processorOptions) {
@@ -211,7 +213,9 @@ func New(opts ...ProcessorOpt) *Processor {
 		opt(&p.opts)
 	}
 
-	p.incSema = make(chan struct{}, p.opts.clientConcurrency)
+	if p.opts.clientConcurrency > 0 {
+		p.incSema = make(chan struct{}, p.opts.clientConcurrency)
+	}
 
 	return p
 }
@@ -448,15 +452,17 @@ func (p *Processor) include(ctx context.Context, ele *esi.IncludeElement) (*incl
 }
 
 func (p *Processor) doInclude(ctx context.Context, urlStr string, extra map[string]string) ([]byte, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case p.incSema <- struct{}{}:
-	}
+	if p.incSema != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case p.incSema <- struct{}{}:
+		}
 
-	defer func() {
-		<-p.incSema
-	}()
+		defer func() {
+			<-p.incSema
+		}()
+	}
 
 	interpolatedURL, err := p.interpolate(ctx, urlStr)
 	if err != nil {
