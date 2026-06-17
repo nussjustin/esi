@@ -282,7 +282,9 @@ func TestClient(t *testing.T) {
 				req := &http.Request{Method: "GET", URL: testURL}
 
 				cookies := []*http.Cookie{
+					//gosec:disable G124 -- Not relevant since this is a test
 					{Name: "cookie1", Value: "value1"},
+					//gosec:disable G124 -- Not relevant since this is a test
 					{Name: "cookie2", Value: "value2"},
 				}
 
@@ -297,6 +299,7 @@ func TestClient(t *testing.T) {
 			Name: "cookies not updated",
 			Client: esihttp.Client{
 				HTTPClient: testClient(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					//gosec:disable G124 -- Not relevant since this is a test
 					cookie := &http.Cookie{
 						Name:   "test",
 						Value:  "test",
