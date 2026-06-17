@@ -8,16 +8,65 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
+// See also https://www.w3.org/TR/esi-lang/, 3. ESI Elements.
 func bytesToName(b []byte) Name {
 	ns, name, ok := bytes.Cut(b, []byte(":"))
 	if !ok {
-		return Name{Local: bytesToString(b)}
+		return Name{Local: bytesToLowerString(b)}
 	}
-	return Name{Space: bytesToString(ns), Local: bytesToString(name)}
+	return Name{Space: bytesToLowerString(ns), Local: bytesToLowerString(name)}
+}
+
+func bytesToLowerString(b []byte) string {
+	// Using a switch is measurably faster than a map
+	switch string(b) {
+	case "alt", "ALT":
+		return "alt"
+	case "attempt", "ATTEMPT":
+		return "attempt"
+	case "choose", "CHOOSE":
+		return "choose"
+	case "comment", "COMMENT":
+		return "comment"
+	case "continue", "CONTINUE":
+		return "continue"
+	case "esi", "ESI":
+		return "esi"
+	case "except", "EXCEPT":
+		return "except"
+	case "fetchable", "FETCHABLE":
+		return "fetchable"
+	case "include", "INCLUDE":
+		return "include"
+	case "inline", "INLINE":
+		return "inline"
+	case "name", "NAME":
+		return "name"
+	case "onerror", "ONERROR":
+		return "onerror"
+	case "otherwise", "OTHERWISE":
+		return "otherwise"
+	case "remove", "REMOVE":
+		return "remove"
+	case "src", "SRC":
+		return "src"
+	case "test", "TEST":
+		return "test"
+	case "text", "TEXT":
+		return "text"
+	case "try", "TRY":
+		return "try"
+	case "vars", "VARS":
+		return "vars"
+	case "when", "WHEN":
+		return "when"
+	}
+	return strings.ToLower(string(b))
 }
 
 func bytesToString(b []byte) string {
@@ -705,14 +754,27 @@ func (r *Reader) parseElementOrData() (Token, error) {
 
 		var nextStateFn func(*Reader) (Token, error)
 
-		next, _ := r.br.Peek(8)
+		next, _ := r.br.Peek(7)
 
 		switch {
-		case bytes.HasPrefix(next, []byte("<esi:")):
+		case len(next) >= 5 && next[0] == '<' && // <esi:
+			(next[1] == 'e' || next[1] == 'E') &&
+			(next[2] == 's' || next[2] == 'S') &&
+			(next[3] == 'i' || next[3] == 'I') &&
+			next[4] == ':':
 			nextStateFn = (*Reader).parseStartElement
-		case bytes.HasPrefix(next, []byte("</esi:")):
+		case len(next) >= 6 && next[0] == '<' && next[1] == '/' && // </esi:
+			(next[2] == 'e' || next[2] == 'E') &&
+			(next[3] == 's' || next[3] == 'S') &&
+			(next[4] == 'i' || next[4] == 'I') &&
+			next[5] == ':':
 			nextStateFn = (*Reader).parseEndElement
-		case !r.inComment && bytes.HasPrefix(next, []byte("<!--esi")):
+		case !r.inComment && len(next) >= 7 && // <!--esi
+			next[0] == '<' && next[1] == '!' &&
+			next[2] == '-' && next[3] == '-' &&
+			(next[4] == 'e' || next[4] == 'E') &&
+			(next[5] == 's' || next[5] == 'S') &&
+			(next[6] == 'i' || next[6] == 'I'):
 			nextStateFn = (*Reader).parseESICommentStart
 		case !r.inComment && bytes.HasPrefix(next, []byte("<!--")):
 			nextStateFn = (*Reader).parseCommentStart

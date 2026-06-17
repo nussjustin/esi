@@ -1157,6 +1157,35 @@ func TestReader(t *testing.T) {
 				},
 			},
 		},
+
+		{
+			Name:  "elements and attributes are lower cased",
+			Input: `<eSi:InClUdE sRc="VaLuE">tOaSt</EsI:iNcLuDe>`,
+			Tokens: []esixml.Token{
+				{
+					Position: esixml.Position{End: 25},
+					Type:     esixml.TokenTypeStartElement,
+					Name:     esixml.Name{Space: "esi", Local: "include"},
+					Attr: []esixml.Attr{
+						{
+							Position: esixml.Position{Start: 13, End: 24},
+							Name:     esixml.Name{Local: "src"},
+							Value:    "VaLuE",
+						},
+					},
+				},
+				{
+					Position: esixml.Position{Start: 25, End: 30},
+					Type:     esixml.TokenTypeData,
+					Data:     []byte("tOaSt"),
+				},
+				{
+					Position: esixml.Position{Start: 30, End: 44},
+					Type:     esixml.TokenTypeEndElement,
+					Name:     esixml.Name{Space: "esi", Local: "include"},
+				},
+			},
+		},
 	}
 
 	for _, testCase := range testCases {
