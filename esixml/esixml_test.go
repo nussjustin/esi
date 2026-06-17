@@ -1,6 +1,7 @@
 package esixml_test
 
 import (
+	"bytes"
 	"errors"
 	"math"
 	"strings"
@@ -605,6 +606,83 @@ func TestReader(t *testing.T) {
 		},
 
 		{
+			Name:  "ESI comment",
+			Input: "<!--esi some content -->",
+			Tokens: []esixml.Token{
+				{
+					Position: esixml.Position{End: 7},
+					Type:     esixml.TokenTypeESICommentStart,
+				},
+				{
+					Position: esixml.Position{Start: 7, End: 21},
+					Type:     esixml.TokenTypeData,
+					Data:     []byte(" some content "),
+				},
+				{
+					Position: esixml.Position{Start: 21, End: 24},
+					Type:     esixml.TokenTypeCommentEnd,
+				},
+			},
+		},
+		{
+			Name:  "ESI comment without spaces",
+			Input: "<!--esisomecontent-->",
+			Tokens: []esixml.Token{
+				{
+					Position: esixml.Position{End: 7},
+					Type:     esixml.TokenTypeESICommentStart,
+				},
+				{
+					Position: esixml.Position{Start: 7, End: 18},
+					Type:     esixml.TokenTypeData,
+					Data:     []byte("somecontent"),
+				},
+				{
+					Position: esixml.Position{Start: 18, End: 21},
+					Type:     esixml.TokenTypeCommentEnd,
+				},
+			},
+		},
+		{
+			Name:  "nested ESI comment",
+			Input: "<!--esi some <!--esi nested --> content -->",
+			Tokens: []esixml.Token{
+				{Position: esixml.Position{Start: 0, End: 7}, Type: esixml.TokenTypeESICommentStart},
+				{Position: esixml.Position{Start: 7, End: 28}, Type: esixml.TokenTypeData, Data: []byte(" some <!--esi nested ")},
+				{Position: esixml.Position{Start: 28, End: 31}, Type: esixml.TokenTypeCommentEnd},
+				{Position: esixml.Position{Start: 31, End: 43}, Type: esixml.TokenTypeData, Data: []byte(" content -->")},
+			},
+		},
+		{
+			Name:  "XML comment",
+			Input: "<!-- some content -->",
+			Tokens: []esixml.Token{
+				{Position: esixml.Position{End: 4}, Type: esixml.TokenTypeCommentStart},
+				{Position: esixml.Position{Start: 4, End: 18}, Type: esixml.TokenTypeData, Data: []byte(" some content ")},
+				{Position: esixml.Position{Start: 18, End: 21}, Type: esixml.TokenTypeCommentEnd},
+			},
+		},
+		{
+			Name:  "XML comment without spaces",
+			Input: "<!--somecontent-->",
+			Tokens: []esixml.Token{
+				{Position: esixml.Position{End: 4}, Type: esixml.TokenTypeCommentStart},
+				{Position: esixml.Position{Start: 4, End: 15}, Type: esixml.TokenTypeData, Data: []byte("somecontent")},
+				{Position: esixml.Position{Start: 15, End: 18}, Type: esixml.TokenTypeCommentEnd},
+			},
+		},
+		{
+			Name:  "nested XML comment",
+			Input: "<!-- some <!-- nested --> content -->",
+			Tokens: []esixml.Token{
+				{Position: esixml.Position{End: 4}, Type: esixml.TokenTypeCommentStart},
+				{Position: esixml.Position{Start: 4, End: 22}, Type: esixml.TokenTypeData, Data: []byte(" some <!-- nested ")},
+				{Position: esixml.Position{Start: 22, End: 25}, Type: esixml.TokenTypeCommentEnd},
+				{Position: esixml.Position{Start: 25, End: 37}, Type: esixml.TokenTypeData, Data: []byte(" content -->")},
+			},
+		},
+
+		{
 			Name: "complex",
 			Input: `
 <header>Header</header>
@@ -663,6 +741,10 @@ func TestReader(t *testing.T) {
 <some"><invalid<xml:<elements that="should be </ignored>
 
 <name:spaced-element></name:spaced-element>
+
+<!--esi ESI comment -->
+
+<!-- XML comment -->
 
 <footer>Footer</footer>
 			`,
@@ -1048,10 +1130,30 @@ func TestReader(t *testing.T) {
 					Name:     esixml.Name{Space: "esi", Local: "vars"},
 				},
 				{
-					Position: esixml.Position{Start: 1292, End: endIsEOF},
+					Position: esixml.Position{
+						Start: 1292,
+						End:   1397,
+					},
+					Type: esixml.TokenTypeData,
+					Data: bytes.Join(
+						[][]byte{
+							[]byte("\n\n<some\"><invalid<xml:<elements that=\"should be </ignored>\n\n"),
+							[]byte("<name:spaced-element></name:spaced-element>\n\n"),
+						},
+						nil,
+					),
+				},
+				{Position: esixml.Position{Start: 1397, End: 1404}, Type: esixml.TokenTypeESICommentStart},
+				{Position: esixml.Position{Start: 1404, End: 1417}, Type: esixml.TokenTypeData, Data: []byte(" ESI comment ")},
+				{Position: esixml.Position{Start: 1417, End: 1420}, Type: esixml.TokenTypeCommentEnd},
+				{Position: esixml.Position{Start: 1420, End: 1422}, Type: esixml.TokenTypeData, Data: []byte("\n\n")},
+				{Position: esixml.Position{Start: 1422, End: 1426}, Type: esixml.TokenTypeCommentStart},
+				{Position: esixml.Position{Start: 1426, End: 1439}, Type: esixml.TokenTypeData, Data: []byte(" XML comment ")},
+				{Position: esixml.Position{Start: 1439, End: 1442}, Type: esixml.TokenTypeCommentEnd},
+				{
+					Position: esixml.Position{Start: 1442, End: endIsEOF},
 					Type:     esixml.TokenTypeData,
-					Data: []byte("\n\n<some\"><invalid<xml:<elements that=\"should be </ignored>\n" +
-						"\n<name:spaced-element></name:spaced-element>\n\n<footer>Footer</footer>"),
+					Data:     []byte("\n\n<footer>Footer</footer>"),
 				},
 			},
 		},
@@ -1164,6 +1266,10 @@ func BenchmarkReader(b *testing.B) {
 <some"><invalid<xml:<elements that="should be </ignored>
 
 <name:spaced-element></name:spaced-element>
+
+<!--esi ESI comment -->
+
+<!-- XML comment -->
 
 <footer>Footer</footer>`,
 	)

@@ -316,6 +316,15 @@ const (
 	// TokenTypeInvalid is the zero value for TokenType and is not a valid type.
 	TokenTypeInvalid TokenType = iota
 
+	// TokenTypeCommentEnd is used for tokens representing the end of a XML/HTML or ESI comment, aka "-->".
+	TokenTypeCommentEnd
+
+	// TokenTypeCommentStart is used for tokens representing the start of a XML/HTML comment, aka "<!--".
+	TokenTypeCommentStart
+
+	// TokenTypeESICommentStart is used for tokens representing the start of an ESI comment, aka "<!--esi".
+	TokenTypeESICommentStart
+
 	// TokenTypeStartElement indicates that a [Token] represents a starting ESI element, e.g. "<esi:include".
 	TokenTypeStartElement
 
@@ -331,6 +340,12 @@ func (t TokenType) String() string {
 	switch t {
 	case TokenTypeInvalid:
 		return "TokenTypeInvalid"
+	case TokenTypeCommentEnd:
+		return "TokenTypeCommentEnd"
+	case TokenTypeCommentStart:
+		return "TokenTypeCommentStart"
+	case TokenTypeESICommentStart:
+		return "TokenTypeESICommentStart"
 	case TokenTypeStartElement:
 		return "TokenTypeStartElement"
 	case TokenTypeEndElement:
@@ -352,6 +367,8 @@ type Reader struct {
 
 	attrBuf [32]byte
 	nameBuf [32]byte
+
+	inComment bool
 
 	stateFn func(*Reader) (Token, error)
 }
@@ -415,6 +432,7 @@ func (r *Reader) Reset(in io.Reader) {
 	r.br.Reset(in)
 	r.offset = 0
 	r.err = nil
+	r.inComment = false
 	r.stateFn = (*Reader).parseElementOrData
 }
 
@@ -502,11 +520,143 @@ func (r *Reader) unreadByte() {
 	r.offset--
 }
 
-func (r *Reader) parseEndElement() (Token, error) {
-	// We already consumed the '<', so we must subtract it from the offset
-	t := Token{Type: TokenTypeEndElement, Position: Position{Start: r.offset - 1}}
+func (r *Reader) createDataToken(data []byte, err error) (Token, error) {
+	if len(data) == 0 {
+		return Token{}, err
+	}
+
+	return Token{
+		Type: TokenTypeData,
+		Position: Position{
+			Start: r.offset - len(data),
+			End:   r.offset,
+		},
+		Data: data,
+	}, err
+}
+
+func (r *Reader) parseComment() (Token, error) {
+	var data []byte
+
+	findDash := func(b []byte) int { return bytes.IndexByte(b, '-') }
+
+	for {
+		newData, err := appendBeforeIndex(data, &r.br, findDash)
+
+		r.offset += len(newData) - len(data)
+		r.err = err
+
+		data = newData
+
+		if err == io.EOF { //nolint:errorlint
+			return r.createDataToken(data, err)
+		}
+
+		next, _ := r.br.Peek(3)
+
+		var nextStateFn func(*Reader) (Token, error)
+
+		switch {
+		case bytes.HasPrefix(next, []byte("-->")):
+			nextStateFn = (*Reader).parseCommentEnd
+		default:
+			// We know that there is at least one more readable character, so we can ignore the error
+			data = append(data, '-')
+			r.consume('-')
+			continue
+		}
+
+		r.stateFn = nextStateFn
+
+		return r.createDataToken(data, nil)
+	}
+}
+
+func (r *Reader) parseCommentEnd() (Token, error) {
+	t := Token{Type: TokenTypeCommentEnd, Position: Position{Start: r.offset}}
 
 	// An error here should be impossible, but we check just in case
+	if err := r.consumeOrError('-'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('-'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('>'); err != nil {
+		return Token{}, err
+	}
+
+	t.Position.End = r.offset
+
+	r.inComment = false
+	r.stateFn = (*Reader).parseElementOrData
+	return t, nil
+}
+
+func (r *Reader) parseCommentStart() (Token, error) {
+	t := Token{Type: TokenTypeCommentStart, Position: Position{Start: r.offset}}
+
+	// An error here should be impossible, but we check just in case
+	if err := r.consumeOrError('<'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('!'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('-'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('-'); err != nil {
+		return Token{}, err
+	}
+
+	t.Position.End = r.offset
+
+	r.inComment = true
+	r.stateFn = (*Reader).parseComment
+	return t, nil
+}
+
+func (r *Reader) parseESICommentStart() (Token, error) {
+	t := Token{Type: TokenTypeESICommentStart, Position: Position{Start: r.offset}}
+
+	// An error here should be impossible, but we check just in case
+	if err := r.consumeOrError('<'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('!'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('-'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('-'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('e'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('s'); err != nil {
+		return Token{}, err
+	}
+	if err := r.consumeOrError('i'); err != nil {
+		return Token{}, err
+	}
+
+	t.Position.End = r.offset
+
+	r.inComment = true
+	r.stateFn = (*Reader).parseElementOrData
+	return t, nil
+}
+
+func (r *Reader) parseEndElement() (Token, error) {
+	t := Token{Type: TokenTypeEndElement, Position: Position{Start: r.offset}}
+
+	// An error here should be impossible, but we check just in case
+	if err := r.consumeOrError('<'); err != nil {
+		return Token{}, err
+	}
 	if err := r.consumeOrError('/'); err != nil {
 		return Token{}, err
 	}
@@ -532,72 +682,62 @@ func (r *Reader) parseEndElement() (Token, error) {
 func (r *Reader) parseElementOrData() (Token, error) {
 	var data []byte
 
-	for {
-		buf, err := r.br.ReadSlice('<')
-
-		// ReadSlice can return data even if there was an error, so we must append it either way
-		data = append(data, buf...)
-
-		switch {
-		case err == bufio.ErrBufferFull: //nolint:errorlint
-			continue
-		case err == io.EOF: //nolint:errorlint
-			r.offset += len(data)
-			r.err = io.EOF
-
-			if len(data) == 0 {
-				return Token{}, err
+	findDashOrLessThan := func(b []byte) int {
+		for i, c := range b {
+			if c == '-' || c == '<' {
+				return i
 			}
-
-			return Token{
-				Type: TokenTypeData,
-				Position: Position{
-					Start: r.offset - len(data),
-					End:   r.offset,
-				},
-				Data: data,
-			}, err
-		case err != nil:
-			return Token{}, err
 		}
+		return -1
+	}
 
-		next, _ := r.br.Peek(5)
+	for {
+		newData, err := appendBeforeIndex(data, &r.br, findDashOrLessThan)
+
+		r.offset += len(newData) - len(data)
+		r.err = err
+
+		data = newData
+
+		if err == io.EOF { //nolint:errorlint
+			return r.createDataToken(data, err)
+		}
 
 		var nextStateFn func(*Reader) (Token, error)
 
+		next, _ := r.br.Peek(8)
+
 		switch {
-		case bytes.HasPrefix(next, []byte("esi:")):
+		case bytes.HasPrefix(next, []byte("<esi:")):
 			nextStateFn = (*Reader).parseStartElement
-		case bytes.HasPrefix(next, []byte("/esi:")):
+		case bytes.HasPrefix(next, []byte("</esi:")):
 			nextStateFn = (*Reader).parseEndElement
+		case !r.inComment && bytes.HasPrefix(next, []byte("<!--esi")):
+			nextStateFn = (*Reader).parseESICommentStart
+		case !r.inComment && bytes.HasPrefix(next, []byte("<!--")):
+			nextStateFn = (*Reader).parseCommentStart
+		case r.inComment && bytes.HasPrefix(next, []byte("-->")):
+			nextStateFn = (*Reader).parseCommentEnd
 		default:
+			// We know that there is at least one more readable character, so we can ignore the error
+			data = append(data, next[0])
+			r.consume(next[0])
 			continue
 		}
 
-		r.offset += len(data)
 		r.stateFn = nextStateFn
 
-		// data includes the '<' so we must account for it in our check
-		if len(data) <= 1 {
-			return Token{}, nil
-		}
-
-		return Token{
-			Type: TokenTypeData,
-			Position: Position{
-				Start: r.offset - len(data),
-				// Do not counter the '<'.
-				End: r.offset - 1,
-			},
-			// Remove the '<' from the data, which will be parsed as part of the ESI start or end element.
-			Data: data[:len(data)-1],
-		}, nil
+		return r.createDataToken(data, nil)
 	}
 }
 
 func (r *Reader) parseStartElement() (Token, error) {
-	// We already consumed the '<', so we must subtract it from the offset
-	t := Token{Type: TokenTypeStartElement, Position: Position{Start: r.offset - 1}}
+	t := Token{Type: TokenTypeStartElement, Position: Position{Start: r.offset}}
+
+	// An error here should be impossible, but we check just in case
+	if err := r.consumeOrError('<'); err != nil {
+		return Token{}, err
+	}
 
 	var err error
 
@@ -659,6 +799,38 @@ func (r *Reader) parseStartElement() (Token, error) {
 
 	r.stateFn = (*Reader).parseElementOrData
 	return t, nil
+}
+
+func appendBeforeIndex(dst []byte, br *bufio.Reader, f func([]byte) int) ([]byte, error) {
+	for {
+		buf, err := br.Peek(1024)
+
+		switch {
+		case err != nil && len(buf) != 0:
+			// Try to process the bytes that we could read
+		case err != nil:
+			return dst, err
+		}
+
+		end, found := len(buf), false
+
+		if idx := f(buf); idx != -1 {
+			end, found = idx, true
+		}
+
+		// Avoid many small reallocations
+		if dst == nil && end > 0 {
+			dst = make([]byte, 0, 128)
+		}
+
+		dst = append(dst, buf[:end]...)
+
+		_, _ = br.Discard(end)
+
+		if found {
+			return dst, nil
+		}
+	}
 }
 
 // From https://github.com/golang/go/blob/7a2689b152785010ee2013fb220a048bfe31e49f/src/encoding/xml/xml.go#L1289-L1482

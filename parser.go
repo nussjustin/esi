@@ -32,7 +32,7 @@ func (d *DuplicateElementError) Is(err error) bool {
 type EmptyElementError struct {
 	Position Position
 
-	// Element is the element name.
+	// Name is the element name.
 	Name esixml.Name
 }
 
@@ -304,6 +304,25 @@ func (e *ChooseElement) Name() esixml.Name {
 
 // Pos returns the start and end position of the element.
 func (e *ChooseElement) Pos() (start, end int) {
+	return e.Position.Pos()
+}
+
+// Comment represents an <!--esi ... --> comment.
+//
+// See https://www.w3.org/TR/esi-lang/, 3.7 <!-- esi ...-->.
+type Comment struct {
+	Position Position
+
+	// Nodes contains all child nodes of the element.
+	Nodes []Node
+}
+
+var _ Node = (*Comment)(nil)
+
+func (*Comment) node() {}
+
+// Pos returns the start and end position of the element.
+func (e *Comment) Pos() (start, end int) {
 	return e.Position.Pos()
 }
 
@@ -582,6 +601,25 @@ func (e *WhenElement) Name() esixml.Name {
 
 // Pos returns the start and end position of the element.
 func (e *WhenElement) Pos() (start, end int) {
+	return e.Position.Pos()
+}
+
+// XMLComment represents an XML style comment that does not start with <!--esi.
+//
+// See https://www.w3.org/TR/esi-lang/, 3.7 <!-- esi ...-->.
+type XMLComment struct {
+	Position Position
+
+	// Nodes contains all child nodes of the element.
+	Nodes []Node
+}
+
+var _ Node = (*XMLComment)(nil)
+
+func (*XMLComment) node() {}
+
+// Pos returns the start and end position of the element.
+func (e *XMLComment) Pos() (start, end int) {
 	return e.Position.Pos()
 }
 
@@ -960,6 +998,12 @@ func (p *Parser) parseDataOrElement() (Node, error) {
 	switch tok.Type {
 	case esixml.TokenTypeInvalid:
 		panic("unreachable")
+	case esixml.TokenTypeCommentEnd:
+		p.stateFn = (*Parser).parseXMLCommentEnd
+	case esixml.TokenTypeCommentStart:
+		p.stateFn = (*Parser).parseXMLCommentStart
+	case esixml.TokenTypeESICommentStart:
+		p.stateFn = (*Parser).parseESICommentStart
 	case esixml.TokenTypeStartElement:
 		p.stateFn = (*Parser).parseElement
 	case esixml.TokenTypeEndElement:
@@ -969,6 +1013,71 @@ func (p *Parser) parseDataOrElement() (Node, error) {
 	}
 
 	p.unreadToken = tok
+	return nil, nil
+}
+
+func (p *Parser) parseESICommentStart() (Node, error) {
+	tok, err := p.mustNextTyped(esixml.TokenTypeESICommentStart)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, ok := p.currentScope().(*Comment); ok {
+		return nil, &UnexpectedTokenError{Position: tok.Position, Type: tok.Type}
+	}
+
+	if _, ok := p.currentScope().(*XMLComment); ok {
+		return nil, &UnexpectedTokenError{Position: tok.Position, Type: tok.Type}
+	}
+
+	p.pushScope(&Comment{Position: tok.Position})
+	p.stateFn = (*Parser).parseDataOrElement
+	return nil, nil
+}
+
+func (p *Parser) parseXMLCommentEnd() (Node, error) {
+	tok, err := p.mustNextTyped(esixml.TokenTypeCommentEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	switch p.currentScope().(type) {
+	case *Comment:
+		children := p.exitScope()
+
+		el := p.current().(*Comment)
+		el.Nodes = children
+		el.Position.End = tok.Position.End
+	case *XMLComment:
+		children := p.exitScope()
+
+		el := p.current().(*XMLComment)
+		el.Nodes = children
+		el.Position.End = tok.Position.End
+	default:
+		return nil, &UnexpectedTokenError{Position: tok.Position, Type: tok.Type}
+	}
+
+	p.stateFn = (*Parser).parseDataOrElement
+	return p.popIfRoot(), nil
+}
+
+func (p *Parser) parseXMLCommentStart() (Node, error) {
+	tok, err := p.mustNextTyped(esixml.TokenTypeCommentStart)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, ok := p.currentScope().(*Comment); ok {
+		return nil, &UnexpectedTokenError{Position: tok.Position, Type: tok.Type}
+	}
+
+	if _, ok := p.currentScope().(*XMLComment); ok {
+		return nil, &UnexpectedTokenError{Position: tok.Position, Type: tok.Type}
+	}
+
+	p.pushScope(&XMLComment{Position: tok.Position})
+	p.stateFn = (*Parser).parseDataOrElement
 	return nil, nil
 }
 

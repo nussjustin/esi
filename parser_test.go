@@ -1007,6 +1007,115 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			Name:  "ESI comment",
+			Input: `<!--esi some <esi:remove>long</esi:remove> comment -->`,
+			Nodes: []esi.Node{
+				&esi.Comment{
+					Position: position(0, 54),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(7, 13),
+							Bytes:    []byte(" some "),
+						},
+						&esi.RemoveElement{
+							Position: position(13, 42),
+							Nodes: []esi.Node{
+								&esi.RawData{
+									Position: position(25, 29),
+									Bytes:    []byte("long"),
+								},
+							},
+						},
+						&esi.RawData{
+							Position: position(42, 51),
+							Bytes:    []byte(" comment "),
+						},
+					},
+				},
+			},
+		},
+		{
+			Name:  "nested ESI comments",
+			Input: `<!--esi some <!--esi <esi:remove>long</esi:remove> --> comment -->`,
+			Nodes: []esi.Node{
+				&esi.Comment{
+					Position: position(0, 54),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(7, 21),
+							Bytes:    []byte(" some <!--esi "),
+						},
+						&esi.RemoveElement{
+							Position: position(21, 50),
+							Nodes: []esi.Node{
+								&esi.RawData{
+									Position: position(33, 37),
+									Bytes:    []byte("long"),
+								},
+							},
+						},
+						&esi.RawData{
+							Position: position(50, 51),
+							Bytes:    []byte(" "),
+						},
+					},
+				},
+				&esi.RawData{
+					Position: position(54, 66),
+					Bytes:    []byte(" comment -->"),
+				},
+			},
+		},
+		{
+			Name:  "XML comment",
+			Input: `<!-- some comment -->`,
+			Nodes: []esi.Node{
+				&esi.XMLComment{
+					Position: position(0, 21),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(4, 18),
+							Bytes:    []byte(" some comment "),
+						},
+					},
+				},
+			},
+		},
+		{
+			Name:  "nested XML comment",
+			Input: `<!-- some <!-- long --> comment -->`,
+			Nodes: []esi.Node{
+				&esi.XMLComment{
+					Position: position(0, 23),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(4, 20),
+							Bytes:    []byte(" some <!-- long "),
+						},
+					},
+				},
+				&esi.RawData{
+					Position: position(23, 35),
+					Bytes:    []byte(" comment -->"),
+				},
+			},
+		},
+		{
+			Name:  "XML comment with ESI",
+			Input: `<!-- some <esi:remove>invalid</esi:remove> comment -->`,
+			Nodes: []esi.Node{
+				&esi.XMLComment{
+					Position: position(0, 54),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(4, 51),
+							Bytes:    []byte(" some <esi:remove>invalid</esi:remove> comment "),
+						},
+					},
+				},
+			},
+		},
+		{
 			Name: "complex",
 			Input: `
 <header>Header</header>
@@ -1065,6 +1174,10 @@ func TestParse(t *testing.T) {
 <some"><invalid<xml:<elements that="should be </ignored>
 
 <name:spaced-element></name:spaced-element>
+
+<!--esi ESI comment -->
+
+<!-- XML comment -->
 
 <footer>Footer</footer>
 			`,
@@ -1240,14 +1353,40 @@ func TestParse(t *testing.T) {
 					},
 				},
 				&esi.RawData{
-					Position: position(1302, 1430),
+					Position: position(1302, 1407),
 					Bytes: bytes.Join(
 						[][]byte{
 							[]byte("\n\n<some\"><invalid<xml:<elements that=\"should be </ignored>\n\n"),
-							[]byte("<name:spaced-element></name:spaced-element>\n\n<footer>Footer</footer>"),
+							[]byte("<name:spaced-element></name:spaced-element>\n\n"),
 						},
 						nil,
 					),
+				},
+				&esi.Comment{
+					Position: position(1407, 1430),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(1414, 1427),
+							Bytes:    []byte(" ESI comment "),
+						},
+					},
+				},
+				&esi.RawData{
+					Position: position(1430, 1432),
+					Bytes:    []byte("\n\n"),
+				},
+				&esi.XMLComment{
+					Position: position(1432, 1452),
+					Nodes: []esi.Node{
+						&esi.RawData{
+							Position: position(1436, 1449),
+							Bytes:    []byte(" XML comment "),
+						},
+					},
+				},
+				&esi.RawData{
+					Position: position(1452, 1477),
+					Bytes:    []byte("\n\n<footer>Footer</footer>"),
 				},
 			},
 		},
