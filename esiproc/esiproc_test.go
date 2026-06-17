@@ -309,6 +309,16 @@ func TestProcessor(t *testing.T) {
 				},
 			},
 		},
+		{
+			Name:     "ESI comment",
+			Input:    `<!--esi before <esi:include src="/test"/> after -->`,
+			Expected: ` before {"extra":null,"url":"/test"} after `,
+		},
+		{
+			Name:     "XML comment",
+			Input:    `<!-- before <esi:include src="/test"/> after -->`,
+			Expected: `<!-- before <esi:include src="/test"/> after -->`,
+		},
 
 		{
 			Name: "complex",

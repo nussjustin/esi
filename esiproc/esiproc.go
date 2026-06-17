@@ -165,6 +165,8 @@ func WithInterpolateFunc(f InterpolateFunc) ProcessorOpt {
 //   - esi:try
 //   - esi:when (see [WithEnv])
 //
+// ESI comments (<!-- esi ... -->) are also supported.
+//
 // If a non-nil [Env] is specified, using [WithEnv], both the src and alt attributes of the esi:include element will
 // have any variables inside replaced via [Env.Interpolate].
 //
@@ -324,6 +326,8 @@ func (p *Processor) processNode(ctx context.Context, resC chan<- processedNode, 
 	switch v := node.(type) {
 	case *esi.AttemptElement:
 		send(nil, nil, &UnexpectedElementError{Element: v})
+	case *esi.Comment:
+		p.processNodes(ctx, resC, v.Nodes)
 	case *esi.CommentElement:
 	case *esi.ChooseElement:
 		for _, w := range v.When {
@@ -393,6 +397,10 @@ func (p *Processor) processNode(ctx context.Context, resC chan<- processedNode, 
 		send(nil, nil, &UnsupportedElementError{Element: v})
 	case *esi.WhenElement:
 		send(nil, nil, &UnexpectedElementError{Element: v})
+	case *esi.XMLComment:
+		send([]byte("<!--"), nil, nil)
+		p.processNodes(ctx, resC, v.Nodes)
+		send([]byte("-->"), nil, nil)
 	default:
 		panic("unreachable")
 	}
