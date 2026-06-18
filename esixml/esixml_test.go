@@ -3,6 +3,7 @@ package esixml_test
 import (
 	"bytes"
 	"errors"
+	"io"
 	"math"
 	"strings"
 	"testing"
@@ -12,15 +13,22 @@ import (
 	"github.com/nussjustin/esi/esixml"
 )
 
+type noProgressReader struct{}
+
+func (b noProgressReader) Read([]byte) (n int, err error) {
+	return 0, io.ErrNoProgress
+}
+
 func TestReader(t *testing.T) {
 	// Marker value that can be used to specify that a token ends at the end of the input string
 	const endIsEOF = math.MinInt
 
 	testCases := []struct {
-		Name   string         `json:"name"`
-		Input  string         `json:"input"`
-		Tokens []esixml.Token `json:"tokens,omitempty"`
-		Error  error          `json:"error,omitempty"`
+		Name        string
+		Input       string
+		InputReader io.Reader
+		Tokens      []esixml.Token
+		Error       error
 	}{
 		{
 			Name:  "empty",
@@ -1186,22 +1194,47 @@ func TestReader(t *testing.T) {
 				},
 			},
 		},
+		{
+			Name:        "broken reader",
+			InputReader: io.MultiReader(strings.NewReader(`<esi:include src="/test">hello`), noProgressReader{}),
+			Tokens: []esixml.Token{
+				{
+					Position: esixml.Position{End: 25},
+					Type:     esixml.TokenTypeStartElement,
+					Name:     esixml.Name{Space: "esi", Local: "include"},
+					Attr: []esixml.Attr{
+						{
+							Position: esixml.Position{Start: 13, End: 24},
+							Name:     esixml.Name{Local: "src"},
+							Value:    "/test",
+						},
+					},
+				},
+			},
+			Error: io.ErrNoProgress,
+		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
-			input := strings.TrimSpace(testCase.Input)
+			inputReader := testCase.InputReader
 
-			for i, token := range testCase.Tokens {
-				if token.Position.End == endIsEOF {
-					testCase.Tokens[i].Position.End = len(input)
+			if inputReader == nil {
+				input := strings.TrimSpace(testCase.Input)
+
+				for i, token := range testCase.Tokens {
+					if token.Position.End == endIsEOF {
+						testCase.Tokens[i].Position.End = len(input)
+					}
 				}
+
+				inputReader = strings.NewReader(input)
 			}
 
 			var gotTokens []esixml.Token
 			var gotErr error
 
-			r := esixml.NewReader(strings.NewReader(input))
+			r := esixml.NewReader(inputReader)
 
 			for token, err := range r.All {
 				if err != nil {

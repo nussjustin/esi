@@ -754,7 +754,10 @@ func (r *Reader) parseElementOrData() (Token, error) {
 
 		var nextStateFn func(*Reader) (Token, error)
 
-		next, _ := r.br.Peek(7)
+		next, err := r.br.Peek(7)
+		if len(next) == 0 {
+			return Token{}, err
+		}
 
 		switch {
 		case len(next) >= 5 && next[0] == '<' && // <esi:
