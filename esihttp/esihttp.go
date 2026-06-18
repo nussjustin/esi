@@ -93,7 +93,7 @@ type Client struct {
 	// The client should not have an associated cookie jar.
 	//
 	// If nil, [http.DefaultClient] is used.
-	HTTPClient *http.Client
+	HTTPClient HTTPClient
 
 	// BeforeRequest is called before sending the request and can be used to customize it.
 	//
@@ -113,6 +113,13 @@ type Client struct {
 	//
 	// If nil, a 5xx response will result in an [ServerError].
 	On5xx func(resp *http.Response) ([]byte, error)
+}
+
+// HTTPClient is the interface for types that can be used to executed requests.
+//
+// It is implemented by [http.DefaultClient].
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
 }
 
 var _ esiproc.Client = (*Client)(nil)
