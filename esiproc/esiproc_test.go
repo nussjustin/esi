@@ -368,7 +368,7 @@ func TestProcessor(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
 			client := esiproc.ClientFunc(
-				func(_ context.Context, _ *esiproc.Processor, urlStr string, extra map[string]string) ([]byte, error) {
+				func(_ context.Context, urlStr string, extra map[string]string) ([]byte, error) {
 					parsed, err := url.Parse(urlStr)
 					if err != nil {
 						panic(err)
@@ -445,7 +445,7 @@ func BenchmarkProcessor(b *testing.B) {
 		}
 
 		client := esiproc.ClientFunc(
-			func(_ context.Context, _ *esiproc.Processor, urlStr string, _ map[string]string) ([]byte, error) {
+			func(_ context.Context, urlStr string, _ map[string]string) ([]byte, error) {
 				return []byte(urlStr), nil
 			},
 		)

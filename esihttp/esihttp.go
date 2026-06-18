@@ -124,7 +124,7 @@ var _ esiproc.Client = (*Client)(nil)
 //
 // Similarly, if the context has an associated cookie jar (see [WithCookieJar]), it will be used to add cookies to the
 // request. Note that cookies are only read from the jar, but not updated based on the response.
-func (c *Client) Do(ctx context.Context, _ *esiproc.Processor, urlStr string, extra map[string]string) ([]byte, error) {
+func (c *Client) Do(ctx context.Context, urlStr string, extra map[string]string) ([]byte, error) {
 	client := c.HTTPClient
 	if client == nil {
 		client = http.DefaultClient

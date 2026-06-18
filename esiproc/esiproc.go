@@ -82,15 +82,15 @@ func (e *UnsupportedElementError) Unwrap() error {
 type Client interface {
 	// Do is called with the URL that should be included (either the src or alt attribute) and should return the
 	// data to include.
-	Do(ctx context.Context, proc *Processor, urlStr string, extra map[string]string) ([]byte, error)
+	Do(ctx context.Context, urlStr string, extra map[string]string) ([]byte, error)
 }
 
 // ClientFunc implements a [Client] by calling itself.
-type ClientFunc func(ctx context.Context, proc *Processor, urlStr string, extra map[string]string) ([]byte, error)
+type ClientFunc func(ctx context.Context, urlStr string, extra map[string]string) ([]byte, error)
 
 // Do calls c and returns the result.
-func (c ClientFunc) Do(ctx context.Context, proc *Processor, urlStr string, extra map[string]string) ([]byte, error) {
-	return c(ctx, proc, urlStr, extra)
+func (c ClientFunc) Do(ctx context.Context, urlStr string, extra map[string]string) ([]byte, error) {
+	return c(ctx, urlStr, extra)
 }
 
 // EvalFunc defines the signature for functions used to evaluate bool-producing ESI expressions.
@@ -477,5 +477,5 @@ func (p *Processor) doInclude(ctx context.Context, urlStr string, extra map[stri
 		return nil, err
 	}
 
-	return p.opts.client.Do(ctx, p, interpolatedURL, extra)
+	return p.opts.client.Do(ctx, interpolatedURL, extra)
 }

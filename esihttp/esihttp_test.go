@@ -335,7 +335,7 @@ func TestClient(t *testing.T) {
 				ctx = testCase.ContextFunc(ctx)
 			}
 
-			body, err := testCase.Client.Do(ctx, nil, "/test", map[string]string{"name": testCase.Name})
+			body, err := testCase.Client.Do(ctx, "/test", map[string]string{"name": testCase.Name})
 
 			if !errors.Is(err, testCase.ExpectedError) {
 				t.Errorf("got error %v, want %v", err, testCase.ExpectedError)
